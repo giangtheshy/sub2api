@@ -146,3 +146,7 @@ output/
 
 # Vitest / Vite cache at repo root
 .vite/
+
+# Exported browser cookies (contain live claude.ai sessionKeys)
+*cookies*.txt
+*cookies*.json

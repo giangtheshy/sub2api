@@ -6,6 +6,7 @@ export type AddMethod = 'oauth' | 'setup-token'
 export type AuthInputMethod =
   | 'manual'
   | 'cookie'
+  | 'cookie_file'
   | 'refresh_token'
   | 'mobile_refresh_token'
   | 'session_token'
@@ -15,6 +16,56 @@ export type AuthInputMethod =
   | 'codex_pat'
   | 'sso_cookie'
   | 'email_password'
+
+/**
+ * Reason codes the backend attaches to claude.ai cookie failures, mapped to the
+ * i18n key that explains what the operator has to do next.
+ */
+const COOKIE_ERROR_REASON_KEYS: Record<string, string> = {
+  CLAUDE_SESSION_STALE: 'admin.accounts.oauth.cookieSessionStale',
+  CLAUDE_COOKIE_INVALID: 'admin.accounts.oauth.cookieInvalid',
+  CLAUDE_ORG_UNAVAILABLE: 'admin.accounts.oauth.cookieOrgUnavailable'
+}
+
+/**
+ * Shape rejected by the axios interceptor in src/api/client.ts. Note it is a
+ * flat object, not an AxiosError: there is no `response` wrapper.
+ */
+interface ApiError {
+  reason?: string
+  message?: string
+  status?: number
+}
+
+/**
+ * Turns an API rejection into a message worth showing.
+ *
+ * Known reason codes win, because they carry an actionable instruction that can
+ * be localised; otherwise the backend's own message is used, and only then the
+ * generic fallback.
+ */
+export function resolveAuthErrorMessage(
+  error: unknown,
+  translate: (key: string) => string,
+  fallbackKey: string
+): string {
+  const apiError = (error ?? {}) as ApiError
+
+  if (apiError.reason && COOKIE_ERROR_REASON_KEYS[apiError.reason]) {
+    return translate(COOKIE_ERROR_REASON_KEYS[apiError.reason])
+  }
+
+  return apiError.message || translate(fallbackKey)
+}
+
+/**
+ * What to do with a pasted claude.ai cookie export.
+ *
+ * - `oauth`: exchange it for OAuth tokens (needs a freshly signed-in session).
+ * - `cookie_account`: keep the cookie and drive claude.ai's web API directly,
+ *   which also works for sessions Anthropic considers too stale to authorize.
+ */
+export type CookieImportMode = 'oauth' | 'cookie_account'
 
 export interface OAuthState {
   authUrl: string
@@ -163,6 +214,19 @@ export function useAccountOAuth() {
       .filter((k) => k)
   }
 
+  /**
+   * True when the pasted text is a whole cookie export (Netscape file or JSON)
+   * rather than one sessionKey per line. Such input describes a single account
+   * and must not be split on newlines.
+   */
+  const isCookieExport = (input: string): boolean => {
+    const trimmed = input.trim()
+    if (trimmed.startsWith('[') || trimmed.startsWith('{')) return true
+    if (trimmed.startsWith('# Netscape') || trimmed.includes('#HttpOnly_')) return true
+    // A Netscape data line: 7 tab-separated fields.
+    return trimmed.split('\n').some((line) => line.split('\t').length >= 7)
+  }
+
   // Build extra info from token response
   const buildExtraInfo = (tokenInfo: TokenInfo): Record<string, string> | undefined => {
     const extra: Record<string, string> = {}
@@ -192,6 +256,7 @@ export function useAccountOAuth() {
     exchangeAuthCode,
     cookieAuth,
     parseSessionKeys,
+    isCookieExport,
     buildExtraInfo
   }
 }

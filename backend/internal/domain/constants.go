@@ -34,6 +34,9 @@ const (
 	AccountTypeUpstream       = "upstream"        // 上游透传类型账号（通过 Base URL + API Key 连接上游）
 	AccountTypeBedrock        = "bedrock"         // AWS Bedrock 类型账号（通过 SigV4 签名或 API Key 连接 Bedrock，由 credentials.auth_mode 区分）
 	AccountTypeServiceAccount = "service_account" // Google Service Account 类型账号（用于 Vertex AI）
+	// AccountTypeCookie 使用 claude.ai 浏览器 cookie 直连 claude.ai Web API 的账号。
+	// 不需要 OAuth 授权，因此会话过旧（session_stale_relogin）时依然可用。
+	AccountTypeCookie = "cookie"
 )
 
 // Redeem type constants

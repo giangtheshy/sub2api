@@ -231,6 +231,7 @@ func ProvideAccountTestService(
 	tlsFPProfileService *TLSFingerprintProfileService,
 	openAIGatewayService *OpenAIGatewayService,
 	settingService *SettingService,
+	claudeWebClient ClaudeWebClient,
 ) *AccountTestService {
 	service := NewAccountTestService(
 		accountRepo,
@@ -241,6 +242,7 @@ func ProvideAccountTestService(
 		httpUpstream,
 		cfg,
 		tlsFPProfileService,
+		claudeWebClient,
 	)
 	service.agentIdentityWS = openAIGatewayService
 	service.SetSettingService(settingService)
@@ -780,6 +782,7 @@ var ProviderSet = wire.NewSet(
 	ProvideBatchImageWorkerRuntime,
 	wire.Bind(new(AccountRuntimeBlocker), new(*OpenAIGatewayService)),
 	NewOAuthService,
+	NewClaudeCookieAccountService,
 	ProvideOpenAIOAuthService,
 	ProvideGrokOAuthService,
 	wire.Bind(new(GrokOAuthTokenService), new(*GrokOAuthService)),

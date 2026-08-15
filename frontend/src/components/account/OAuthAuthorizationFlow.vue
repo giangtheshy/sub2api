@@ -37,6 +37,17 @@
                 t('admin.accounts.oauth.cookieAutoAuth')
               }}</span>
             </label>
+            <label v-if="showCookieFileOption" class="flex cursor-pointer items-center gap-2">
+              <input
+                v-model="inputMethod"
+                type="radio"
+                value="cookie_file"
+                class="text-blue-600 focus:ring-blue-500"
+              />
+              <span class="text-sm text-blue-900 dark:text-blue-200">{{
+                t('admin.accounts.oauth.cookieFileImport')
+              }}</span>
+            </label>
             <label v-if="showRefreshTokenOption" class="flex cursor-pointer items-center gap-2">
               <input
                 v-model="inputMethod"
@@ -445,6 +456,139 @@
                 loading
                   ? t('admin.accounts.oauth.openai.validating')
                   : t('admin.accounts.oauth.openai.codexSessionImportAndCreate')
+              }}
+            </button>
+          </div>
+        </div>
+
+        <!-- Full claude.ai cookie import (Netscape / TXT / JSON) -->
+        <div v-if="inputMethod === 'cookie_file'" class="space-y-4">
+          <div
+            class="rounded-lg border border-blue-300 bg-white/80 p-4 dark:border-blue-600 dark:bg-gray-800/80"
+          >
+            <p class="mb-3 text-sm text-blue-700 dark:text-blue-300">
+              {{ t('admin.accounts.oauth.cookieFileDesc') }}
+            </p>
+
+            <!-- What to do with the cookie: mint an OAuth token, or keep the
+                 cookie and drive claude.ai directly. -->
+            <div v-if="showCookieAccountMode" class="mb-4 space-y-2">
+              <label
+                v-for="mode in cookieFileModes"
+                :key="mode.value"
+                class="flex cursor-pointer items-start gap-2 rounded-lg border p-3 transition-colors"
+                :class="
+                  cookieFileMode === mode.value
+                    ? 'border-blue-500 bg-blue-50 dark:border-blue-400 dark:bg-blue-900/30'
+                    : 'border-gray-200 hover:border-blue-300 dark:border-gray-600 dark:hover:border-blue-500'
+                "
+              >
+                <input
+                  v-model="cookieFileMode"
+                  type="radio"
+                  :value="mode.value"
+                  class="mt-1 text-blue-600 focus:ring-blue-500"
+                />
+                <span class="min-w-0">
+                  <span class="block text-sm font-medium text-gray-900 dark:text-white">
+                    {{ t(mode.labelKey) }}
+                  </span>
+                  <span class="block text-xs text-gray-500 dark:text-gray-400">
+                    {{ t(mode.descKey) }}
+                  </span>
+                </span>
+              </label>
+            </div>
+
+            <div class="mb-4">
+              <div class="mb-2 flex items-center justify-between gap-2">
+                <label
+                  class="flex items-center gap-2 text-sm font-semibold text-gray-700 dark:text-gray-300"
+                >
+                  <Icon name="key" size="sm" class="text-blue-500" />
+                  {{ t('admin.accounts.oauth.cookieFileInputLabel') }}
+                  <span
+                    v-if="cookieFileCookieCount > 0"
+                    class="rounded-full bg-blue-500 px-2 py-0.5 text-xs text-white"
+                  >
+                    {{ t('admin.accounts.oauth.cookieFileCount', { count: cookieFileCookieCount }) }}
+                  </span>
+                </label>
+                <button
+                  type="button"
+                  class="btn btn-secondary btn-sm shrink-0"
+                  @click="cookieFileInputRef?.click()"
+                >
+                  <Icon name="upload" size="sm" class="mr-1" />
+                  {{ t('admin.accounts.oauth.cookieFileUpload') }}
+                </button>
+                <input
+                  ref="cookieFileInputRef"
+                  type="file"
+                  accept=".txt,.json,text/plain,application/json"
+                  class="hidden"
+                  @change="handleCookieFileSelected"
+                />
+              </div>
+              <textarea
+                v-model="cookieFileInput"
+                rows="8"
+                class="input w-full resize-y font-mono text-sm"
+                :placeholder="t('admin.accounts.oauth.cookieFilePlaceholder')"
+                spellcheck="false"
+              ></textarea>
+              <p class="mt-1 text-xs text-blue-600 dark:text-blue-400">
+                {{ t('admin.accounts.oauth.cookieFileHint') }}
+              </p>
+            </div>
+
+            <div
+              v-if="cookieFileError"
+              class="mb-4 rounded-lg border border-amber-200 bg-amber-50 p-3 dark:border-amber-700 dark:bg-amber-900/30"
+            >
+              <p class="text-sm text-amber-700 dark:text-amber-300">{{ cookieFileError }}</p>
+            </div>
+
+            <div
+              v-if="error"
+              class="mb-4 rounded-lg border border-red-200 bg-red-50 p-3 dark:border-red-700 dark:bg-red-900/30"
+            >
+              <p class="whitespace-pre-line text-sm text-red-600 dark:text-red-400">
+                {{ error }}
+              </p>
+            </div>
+
+            <button
+              type="button"
+              class="btn btn-primary w-full"
+              :disabled="loading || !cookieFileInput.trim()"
+              @click="handleImportCookieFile"
+            >
+              <svg
+                v-if="loading"
+                class="-ml-1 mr-2 h-4 w-4 animate-spin"
+                fill="none"
+                viewBox="0 0 24 24"
+              >
+                <circle
+                  class="opacity-25"
+                  cx="12"
+                  cy="12"
+                  r="10"
+                  stroke="currentColor"
+                  stroke-width="4"
+                ></circle>
+                <path
+                  class="opacity-75"
+                  fill="currentColor"
+                  d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
+                ></path>
+              </svg>
+              <Icon v-else name="sparkles" size="sm" class="mr-2" />
+              {{
+                loading
+                  ? t('admin.accounts.oauth.authorizing')
+                  : t('admin.accounts.oauth.startAutoAuth')
               }}
             </button>
           </div>
@@ -898,7 +1042,11 @@ import { ref, computed, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useClipboard } from '@/composables/useClipboard'
 import Icon from '@/components/icons/Icon.vue'
-import type { AddMethod, AuthInputMethod } from '@/composables/useAccountOAuth'
+import type {
+  AddMethod,
+  AuthInputMethod,
+  CookieImportMode
+} from '@/composables/useAccountOAuth'
 import type { AccountPlatform } from '@/types'
 import { adminAPI } from '@/api/admin'
 
@@ -913,6 +1061,10 @@ interface Props {
   allowMultiple?: boolean
   methodLabel?: string
   showCookieOption?: boolean // Whether to show cookie auto-auth option
+  /** Whether to show the "import full cookie export" option (Netscape/TXT/JSON). */
+  showCookieFileOption?: boolean
+  /** Whether the cookie export may also create a cookie-only account (no OAuth). */
+  showCookieAccountMode?: boolean
   showRefreshTokenOption?: boolean // Whether to show refresh token input option (OpenAI only)
   showMobileRefreshTokenOption?: boolean // Whether to show mobile refresh token option (OpenAI only)
   showSessionTokenOption?: boolean
@@ -944,6 +1096,8 @@ const props = withDefaults(defineProps<Props>(), {
   allowMultiple: false,
   methodLabel: 'Authorization Method',
   showCookieOption: true,
+  showCookieFileOption: false,
+  showCookieAccountMode: false,
   showRefreshTokenOption: false,
   showMobileRefreshTokenOption: false,
   showSessionTokenOption: false,
@@ -964,6 +1118,8 @@ const emit = defineEmits<{
   'generate-url': []
   'exchange-code': [code: string]
   'cookie-auth': [sessionKey: string]
+  /** Full claude.ai cookie export for a single account (Netscape/TXT/JSON). */
+  'import-cookie-file': [content: string, mode: CookieImportMode]
   'validate-refresh-token': [refreshToken: string]
   'validate-mobile-refresh-token': [refreshToken: string]
   'validate-session-token': [sessionToken: string]
@@ -1020,6 +1176,26 @@ const refreshTokenInput = ref('')
 const sessionTokenInput = ref('')
 const codexSessionInput = ref('')
 const codexPATInput = ref('')
+const cookieFileInput = ref('')
+const cookieFileInputRef = ref<HTMLInputElement | null>(null)
+const cookieFileError = ref('')
+const cookieFileMode = ref<CookieImportMode>('oauth')
+const cookieFileModes: ReadonlyArray<{
+  value: CookieImportMode
+  labelKey: string
+  descKey: string
+}> = [
+  {
+    value: 'oauth',
+    labelKey: 'admin.accounts.oauth.cookieModeOAuthLabel',
+    descKey: 'admin.accounts.oauth.cookieModeOAuthDesc'
+  },
+  {
+    value: 'cookie_account',
+    labelKey: 'admin.accounts.oauth.cookieModeAccountLabel',
+    descKey: 'admin.accounts.oauth.cookieModeAccountDesc'
+  }
+]
 const ssoCookieInput = ref('')
 const emailPasswordInput = ref(props.initialEmailPassword || '')
 const showHelpDialog = ref(false)
@@ -1049,6 +1225,7 @@ watch(emailPasswordOptionEnabled, (enabled) => {
 const methodOptionCount = computed(() => [
   props.showManualOption,
   props.showCookieOption,
+  props.showCookieFileOption,
   props.showRefreshTokenOption,
   props.showMobileRefreshTokenOption,
   props.showSessionTokenOption,
@@ -1078,6 +1255,36 @@ const parsedRefreshTokenCount = computed(() => {
     .split('\n')
     .map((rt) => rt.trim())
     .filter((rt) => rt).length
+})
+
+/**
+ * Number of cookies detected in the pasted export, shown as a badge so the
+ * operator can tell a real export from a truncated copy/paste.
+ */
+const cookieFileCookieCount = computed(() => {
+  const trimmed = cookieFileInput.value.trim()
+  if (!trimmed) return 0
+
+  if (trimmed.startsWith('[') || trimmed.startsWith('{')) {
+    try {
+      const parsed = JSON.parse(trimmed)
+      if (Array.isArray(parsed)) return parsed.filter((item) => item?.name).length
+      return Object.keys(parsed as Record<string, unknown>).length
+    } catch {
+      return 0
+    }
+  }
+
+  const netscapeLines = trimmed
+    .split('\n')
+    .filter((line) => !line.trimStart().startsWith('#') || line.includes('#HttpOnly_'))
+    .filter((line) => line.split(/\t| {2,}| /).filter(Boolean).length >= 7)
+  if (netscapeLines.length > 0) return netscapeLines.length
+
+  return trimmed
+    .split(';')
+    .map((pair) => pair.trim())
+    .filter((pair) => pair.includes('=')).length
 })
 
 const parsedCodexSessionCount = computed(() => {
@@ -1195,6 +1402,37 @@ const handleValidateRefreshToken = () => {
   }
 }
 
+const MAX_COOKIE_FILE_BYTES = 512 * 1024
+
+/** Loads a picked .txt/.json cookie export into the textarea. */
+const handleCookieFileSelected = async (event: Event) => {
+  const input = event.target as HTMLInputElement
+  const file = input.files?.[0]
+  // Reset so picking the same file again still fires a change event.
+  input.value = ''
+  if (!file) return
+
+  cookieFileError.value = ''
+  if (file.size > MAX_COOKIE_FILE_BYTES) {
+    cookieFileError.value = t('admin.accounts.oauth.cookieFileTooLarge')
+    return
+  }
+
+  try {
+    cookieFileInput.value = await file.text()
+  } catch {
+    cookieFileError.value = t('admin.accounts.oauth.cookieFileReadFailed')
+  }
+}
+
+const handleImportCookieFile = () => {
+  if (cookieFileInput.value.trim()) {
+    cookieFileError.value = ''
+    const mode = props.showCookieAccountMode ? cookieFileMode.value : 'oauth'
+    emit('import-cookie-file', cookieFileInput.value, mode)
+  }
+}
+
 const handleImportCodexSession = () => {
   if (codexSessionInput.value.trim()) {
     emit('import-codex-session', codexSessionInput.value.trim())
@@ -1223,6 +1461,7 @@ defineExpose({
   sessionToken: sessionTokenInput,
   codexSession: codexSessionInput,
   codexPAT: codexPATInput,
+  cookieFile: cookieFileInput,
   ssoCookie: ssoCookieInput,
   emailPassword: emailPasswordInput,
   inputMethod,
@@ -1235,6 +1474,9 @@ defineExpose({
     sessionTokenInput.value = ''
     codexSessionInput.value = ''
     codexPATInput.value = ''
+    cookieFileInput.value = ''
+    cookieFileError.value = ''
+    cookieFileMode.value = 'oauth'
     ssoCookieInput.value = ''
     emailPasswordInput.value = ''
     inputMethod.value = props.initialInputMethod

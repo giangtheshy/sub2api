@@ -416,6 +416,40 @@ export async function exchangeCode(
   return data
 }
 
+/** Details resolved from a claude.ai cookie, for a cookie-only account. */
+export interface ClaudeCookieAccountValidation {
+  credentials: Record<string, unknown>
+  extra: Record<string, unknown>
+  info: {
+    org_uuid: string
+    org_name: string
+    claude_plan: string
+    claude_capabilities: string[]
+    email_address?: string
+    cookie_count: number
+  }
+}
+
+/**
+ * Validate a claude.ai cookie for a cookie-only account.
+ *
+ * This never performs an OAuth grant, so it also works for sessions Anthropic
+ * considers too stale to authorize.
+ *
+ * @param payload - The pasted cookie and an optional proxy
+ * @returns Credentials and extra to persist, plus the resolved account details
+ */
+export async function validateClaudeCookie(payload: {
+  code: string
+  proxy_id?: number
+}): Promise<ClaudeCookieAccountValidation> {
+  const { data } = await apiClient.post<ClaudeCookieAccountValidation>(
+    '/admin/accounts/cookie-validate',
+    payload
+  )
+  return data
+}
+
 /**
  * Batch create accounts
  * @param accounts - Array of account data
@@ -1013,6 +1047,7 @@ export const accountsAPI = {
   syncUpstreamModelsPreview,
   generateAuthUrl,
   exchangeCode,
+  validateClaudeCookie,
   refreshOpenAIToken,
   batchCreate,
   batchUpdateCredentials,

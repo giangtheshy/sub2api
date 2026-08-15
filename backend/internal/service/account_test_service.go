@@ -151,6 +151,8 @@ type AccountTestService struct {
 	// grokWSDialer is optional; realtime account tests use the default OpenAI-style
 	// WS dialer when nil (supports proxy + coder/websocket handshake).
 	grokWSDialer openAIWSClientDialer
+	// claudeWebClient probes claude.ai cookie accounts.
+	claudeWebClient ClaudeWebClient
 }
 
 func (s *AccountTestService) SetSettingService(settingService *SettingService) {
@@ -169,6 +171,7 @@ func NewAccountTestService(
 	httpUpstream HTTPUpstream,
 	cfg *config.Config,
 	tlsFPProfileService *TLSFingerprintProfileService,
+	claudeWebClient ClaudeWebClient,
 ) *AccountTestService {
 	return &AccountTestService{
 		accountRepo:               accountRepo,
@@ -179,6 +182,7 @@ func NewAccountTestService(
 		httpUpstream:              httpUpstream,
 		cfg:                       cfg,
 		tlsFPProfileService:       tlsFPProfileService,
+		claudeWebClient:           claudeWebClient,
 	}
 }
 
@@ -322,6 +326,10 @@ func (s *AccountTestService) testClaudeAccountConnection(c *gin.Context, account
 	// Bedrock accounts use a separate test path
 	if account.IsBedrock() {
 		return s.testBedrockAccountConnection(c, ctx, account, testModelID)
+	}
+	// Cookie accounts have no bearer token; they are probed through claude.ai.
+	if account.IsClaudeCookie() {
+		return s.testClaudeCookieAccountConnection(c, ctx, account, testModelID)
 	}
 	if account.Type == AccountTypeServiceAccount {
 		return s.testClaudeVertexServiceAccountConnection(c, ctx, account, testModelID)

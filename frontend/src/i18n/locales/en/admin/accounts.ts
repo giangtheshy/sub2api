@@ -939,6 +939,30 @@ export default {
         cookieAutoAuthDesc:
           'Use claude.ai sessionKey to automatically complete OAuth authorization without manually opening browser.',
         sessionKey: 'sessionKey',
+        cookieFileImport: 'Import Cookies (Netscape/JSON)',
+        cookieFileDesc:
+          'Paste or upload a full claude.ai cookie export. The sessionKey is extracted for you and the whole cookie jar is replayed, exactly as your browser sends it.',
+        cookieFileInputLabel: 'claude.ai cookies',
+        cookieFileUpload: 'Choose file',
+        cookieFileCount: '{count} cookies',
+        cookieFilePlaceholder:
+          '# Netscape HTTP Cookie File\n.claude.ai\tTRUE\t/\tTRUE\t1786875405\tsessionKey\tsk-ant-sid01-...\n\n(a Cookie header string or a JSON export also works)',
+        cookieFileHint:
+          'Accepts a Netscape cookie file, a JSON export (Cookie-Editor), a Cookie header string, or a bare sessionKey. One export = one account.',
+        cookieModeOAuthLabel: 'Convert to OAuth tokens',
+        cookieModeOAuthDesc:
+          'Exchange the cookie for OAuth tokens and create a normal Claude account. Requires a session you signed into recently.',
+        cookieModeAccountLabel: 'Create a cookie account (no OAuth)',
+        cookieModeAccountDesc:
+          'Keep the cookie and drive claude.ai directly, the way the browser does. Works even when the session is too old for OAuth. Token counts are estimated rather than metered.',
+        cookieFileTooLarge: 'That file is too large to be a cookie export (max 512 KB).',
+        cookieFileReadFailed: 'Could not read that file. Paste its contents instead.',
+        cookieSessionStale:
+          'The cookie is valid, but your claude.ai session is too old for Anthropic to grant OAuth access. Sign out and sign back in to claude.ai, export the cookies again right away, then retry.',
+        cookieInvalid:
+          'claude.ai rejected this cookie. Sign in again and export a fresh cookie.',
+        cookieOrgUnavailable:
+          'This claude.ai account has no chat-capable organization to authorize (API-only organizations cannot be used).',
         keysCount: '{count} keys',
         batchCreateAccounts: 'Will batch create {count} accounts',
         sessionKeyPlaceholder:

@@ -883,7 +883,18 @@ export interface UpdateGroupRequest {
 // ==================== Account & Proxy Types ====================
 
 export type AccountPlatform = 'anthropic' | 'openai' | 'gemini' | 'antigravity' | 'grok'
-export type AccountType = 'oauth' | 'setup-token' | 'apikey' | 'upstream' | 'bedrock' | 'service_account'
+/**
+ * `cookie` is a claude.ai account driven by a browser cookie through the
+ * claude.ai web API, with no OAuth token involved.
+ */
+export type AccountType =
+  | 'oauth'
+  | 'setup-token'
+  | 'apikey'
+  | 'upstream'
+  | 'bedrock'
+  | 'service_account'
+  | 'cookie'
 export type OAuthAddMethod = 'oauth' | 'setup-token'
 export type ProxyProtocol = 'http' | 'https' | 'socks5' | 'socks5h'
 

@@ -1002,6 +1002,29 @@ export default {
         cookieAutoAuth: 'Cookie 自动授权',
         cookieAutoAuthDesc: '使用 claude.ai sessionKey 自动完成 OAuth 授权，无需手动打开浏览器。',
         sessionKey: 'sessionKey',
+        cookieFileImport: '导入 Cookies（Netscape/JSON）',
+        cookieFileDesc:
+          '粘贴或上传完整的 claude.ai cookie 导出文件。系统会自动提取 sessionKey，并像浏览器一样回放整个 cookie。',
+        cookieFileInputLabel: 'claude.ai cookies',
+        cookieFileUpload: '选择文件',
+        cookieFileCount: '{count} 个 cookie',
+        cookieFilePlaceholder:
+          '# Netscape HTTP Cookie File\n.claude.ai\tTRUE\t/\tTRUE\t1786875405\tsessionKey\tsk-ant-sid01-...\n\n（也支持 Cookie 请求头字符串或 JSON 导出）',
+        cookieFileHint:
+          '支持 Netscape cookie 文件、JSON 导出（Cookie-Editor）、Cookie 请求头字符串，或单个 sessionKey。一份导出对应一个账号。',
+        cookieModeOAuthLabel: '转换为 OAuth token',
+        cookieModeOAuthDesc:
+          '用 cookie 换取 OAuth token，创建普通 Claude 账号。需要刚刚登录过的会话。',
+        cookieModeAccountLabel: '创建 Cookie 账号（不走 OAuth）',
+        cookieModeAccountDesc:
+          '保留 cookie，像浏览器一样直连 claude.ai。即使会话过旧无法 OAuth 也可用。token 数为估算值，非上游计量。',
+        cookieFileTooLarge: '文件过大，不像是 cookie 导出（上限 512 KB）。',
+        cookieFileReadFailed: '无法读取该文件，请改为直接粘贴内容。',
+        cookieSessionStale:
+          'Cookie 有效，但 claude.ai 会话过旧，Anthropic 拒绝授予 OAuth 权限。请退出并重新登录 claude.ai，立即重新导出 cookies 后再试。',
+        cookieInvalid: 'claude.ai 拒绝了该 cookie，请重新登录并导出新的 cookie。',
+        cookieOrgUnavailable:
+          '该 claude.ai 账号没有可用于授权的对话组织（纯 API 组织无法使用）。',
         keysCount: '{count} 个密钥',
         batchCreateAccounts: '将批量创建 {count} 个账号',
         sessionKeyPlaceholder:

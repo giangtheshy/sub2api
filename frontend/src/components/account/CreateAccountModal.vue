@@ -3222,6 +3222,8 @@
         :show-proxy-warning="form.platform !== 'openai' && form.platform !== 'grok' && !!form.proxy_id"
         :allow-multiple="form.platform === 'anthropic'"
         :show-cookie-option="form.platform === 'anthropic'"
+        :show-cookie-file-option="form.platform === 'anthropic'"
+        :show-cookie-account-mode="form.platform === 'anthropic'"
         :show-refresh-token-option="form.platform === 'openai' || form.platform === 'antigravity' || form.platform === 'grok'"
         :show-mobile-refresh-token-option="form.platform === 'openai'"
         :show-session-token-option="false"
@@ -3237,6 +3239,7 @@
         :show-project-id="geminiOAuthType === 'code_assist'"
         @generate-url="handleGenerateUrl"
         @cookie-auth="handleCookieAuth"
+        @import-cookie-file="handleImportCookieFile"
         @validate-refresh-token="handleValidateRefreshToken"
         @validate-mobile-refresh-token="handleOpenAIValidateMobileRT"
         @validate-session-token="handleValidateSessionToken"
@@ -3578,8 +3581,10 @@ import { adminAPI } from '@/api/admin'
 import { useQuotaNotifyState } from '@/composables/useQuotaNotifyState'
 import {
   useAccountOAuth,
+  resolveAuthErrorMessage,
   type AddMethod,
-  type AuthInputMethod
+  type AuthInputMethod,
+  type CookieImportMode
 } from '@/composables/useAccountOAuth'
 import { useOpenAIOAuth } from '@/composables/useOpenAIOAuth'
 import { useGeminiOAuth } from '@/composables/useGeminiOAuth'
@@ -6327,13 +6332,80 @@ const handleExchangeCode = async () => {
   }
 }
 
-const handleCookieAuth = async (sessionKey: string) => {
+/**
+ * Imports one full claude.ai cookie export (Netscape/TXT/JSON). Unlike the
+ * sessionKey field this is never split on newlines: the whole blob describes a
+ * single account, and the backend extracts the sessionKey from it.
+ */
+const handleImportCookieFile = (content: string, mode: CookieImportMode = 'oauth') => {
+  if (mode === 'cookie_account') {
+    return handleCreateCookieAccount(content)
+  }
+  return handleCookieAuth(content, { single: true })
+}
+
+/**
+ * Creates a claude.ai cookie account: the cookie is validated and stored, and
+ * the gateway drives claude.ai's web API with it. No OAuth grant is involved, so
+ * this also works for sessions Anthropic refuses to authorize.
+ */
+const handleCreateCookieAccount = async (content: string) => {
+  oauth.loading.value = true
+  oauth.error.value = ''
+
+  try {
+    const validated = await adminAPI.accounts.validateClaudeCookie({
+      code: content.trim(),
+      ...(form.proxy_id ? { proxy_id: form.proxy_id } : {})
+    })
+
+    const name = form.name?.trim() || validated.info.email_address || validated.info.org_name
+
+    await adminAPI.accounts.create({
+      name,
+      notes: form.notes,
+      platform: 'anthropic',
+      type: 'cookie',
+      credentials: validated.credentials,
+      extra: validated.extra,
+      proxy_id: form.proxy_id,
+      concurrency: form.concurrency,
+      load_factor: form.load_factor ?? undefined,
+      priority: form.priority,
+      rate_multiplier: form.rate_multiplier,
+      group_ids: form.group_ids,
+      expires_at: form.expires_at,
+      auto_pause_on_expired: autoPauseOnExpired.value
+    })
+
+    appStore.showSuccess(t('admin.accounts.oauth.successCreated', { count: 1 }))
+    emit('created')
+    handleClose()
+  } catch (error: unknown) {
+    oauth.error.value = resolveAuthErrorMessage(
+      error,
+      t,
+      'admin.accounts.oauth.cookieAuthFailed'
+    )
+  } finally {
+    oauth.loading.value = false
+  }
+}
+
+const handleCookieAuth = async (
+  sessionKey: string,
+  options: { single?: boolean } = {}
+) => {
   oauth.loading.value = true
   oauth.error.value = ''
 
   try {
     const proxyConfig = form.proxy_id ? { proxy_id: form.proxy_id } : {}
-    const keys = oauth.parseSessionKeys(sessionKey)
+    // A pasted cookie export is one account even though it spans many lines.
+    const treatAsSingle = options.single || oauth.isCookieExport(sessionKey)
+    const keys = treatAsSingle
+      ? [sessionKey.trim()].filter(Boolean)
+      : oauth.parseSessionKeys(sessionKey)
 
     if (keys.length === 0) {
       oauth.error.value = t('admin.accounts.oauth.pleaseEnterSessionKey')
@@ -6452,11 +6524,13 @@ const handleCookieAuth = async (sessionKey: string) => {
         successCount++
       } catch (error: any) {
         failedCount++
+        // The axios interceptor rejects with a flat {reason, message} object,
+        // so read those rather than error.response.data.
+        const detail = resolveAuthErrorMessage(error, t, 'admin.accounts.oauth.authFailed')
         errors.push(
-          t('admin.accounts.oauth.keyAuthFailed', {
-            index: i + 1,
-            error: error.response?.data?.detail || t('admin.accounts.oauth.authFailed')
-          })
+          keys.length > 1
+            ? t('admin.accounts.oauth.keyAuthFailed', { index: i + 1, error: detail })
+            : detail
         )
       }
     }
@@ -6475,7 +6549,11 @@ const handleCookieAuth = async (sessionKey: string) => {
       oauth.error.value = errors.join('\n')
     }
   } catch (error: any) {
-    oauth.error.value = error.response?.data?.detail || t('admin.accounts.oauth.cookieAuthFailed')
+    oauth.error.value = resolveAuthErrorMessage(
+      error,
+      t,
+      'admin.accounts.oauth.cookieAuthFailed'
+    )
   } finally {
     oauth.loading.value = false
   }

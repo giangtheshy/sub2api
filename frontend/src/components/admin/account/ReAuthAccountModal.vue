@@ -130,6 +130,7 @@
         :show-help="isAnthropic"
         :show-proxy-warning="isAnthropic"
         :show-cookie-option="isAnthropic"
+        :show-cookie-file-option="isAnthropic"
         :show-refresh-token-option="isOpenAI || isAntigravity || isGrok"
         :show-sso-option="isGrok"
         :show-email-password-option="false"
@@ -140,6 +141,7 @@
         :initial-input-method="grokInitialInputMethod"
         @generate-url="handleGenerateUrl"
         @cookie-auth="handleCookieAuth"
+        @import-cookie-file="handleCookieAuth"
         @validate-refresh-token="handleGrokValidateRefreshToken"
         @import-sso="handleGrokImportSSO"
       />
@@ -196,6 +198,7 @@ import { useAppStore } from '@/stores/app'
 import { adminAPI } from '@/api/admin'
 import {
   useAccountOAuth,
+  resolveAuthErrorMessage,
   type AddMethod,
   type AuthInputMethod
 } from '@/composables/useAccountOAuth'
@@ -599,8 +602,11 @@ const handleCookieAuth = async (sessionKey: string) => {
     emit('reauthorized', updatedAccount)
     handleClose()
   } catch (error: any) {
-    claudeOAuth.error.value =
-      error.response?.data?.detail || t('admin.accounts.oauth.cookieAuthFailed')
+    claudeOAuth.error.value = resolveAuthErrorMessage(
+      error,
+      t,
+      'admin.accounts.oauth.cookieAuthFailed'
+    )
   } finally {
     claudeOAuth.loading.value = false
   }

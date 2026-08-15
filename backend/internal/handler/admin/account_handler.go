@@ -28,6 +28,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/pkg/timezone"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/xai"
 	"github.com/Wei-Shaw/sub2api/internal/service"
+	"github.com/Wei-Shaw/sub2api/internal/util/claudecookie"
 
 	"github.com/gin-gonic/gin"
 	"golang.org/x/sync/errgroup"
@@ -35,13 +36,18 @@ import (
 
 // OAuthHandler handles OAuth-related operations for accounts
 type OAuthHandler struct {
-	oauthService *service.OAuthService
+	oauthService     *service.OAuthService
+	cookieAccountSvc *service.ClaudeCookieAccountService
 }
 
 // NewOAuthHandler creates a new OAuth handler
-func NewOAuthHandler(oauthService *service.OAuthService) *OAuthHandler {
+func NewOAuthHandler(
+	oauthService *service.OAuthService,
+	cookieAccountSvc *service.ClaudeCookieAccountService,
+) *OAuthHandler {
 	return &OAuthHandler{
-		oauthService: oauthService,
+		oauthService:     oauthService,
+		cookieAccountSvc: cookieAccountSvc,
 	}
 }
 
@@ -2259,48 +2265,82 @@ func (h *OAuthHandler) ExchangeSetupTokenCode(c *gin.Context) {
 	response.Success(c, tokenInfo)
 }
 
-// CookieAuthRequest represents the request for cookie-based authentication
+// CookieAuthRequest represents the request for cookie-based authentication.
+//
+// The 'code' field carries whatever the operator pasted: a bare sessionKey, a
+// Cookie header, a Netscape cookie file, or a JSON cookie export. It is named
+// 'code' because it shares the frontend payload shape with the manual OAuth flow.
 type CookieAuthRequest struct {
-	SessionKey string `json:"code" binding:"required"` // Using 'code' field as sessionKey (frontend sends it this way)
-	ProxyID    *int64 `json:"proxy_id"`
+	Cookie  string `json:"code" binding:"required"`
+	ProxyID *int64 `json:"proxy_id"`
 }
 
-// CookieAuth performs OAuth using sessionKey (cookie-based auto-auth)
+// cookieAuthInput parses the pasted cookie into a CookieAuthInput.
+func cookieAuthInput(req *CookieAuthRequest, scope string) (*service.CookieAuthInput, error) {
+	parsed, err := claudecookie.ParseOne(req.Cookie)
+	if err != nil {
+		return nil, err
+	}
+	return &service.CookieAuthInput{
+		SessionKey:   parsed.SessionKey,
+		CookieHeader: parsed.Jar,
+		ProxyID:      req.ProxyID,
+		Scope:        scope,
+	}, nil
+}
+
+// CookieAuth performs OAuth using a claude.ai cookie (cookie-based auto-auth)
 // POST /api/v1/admin/accounts/cookie-auth
 func (h *OAuthHandler) CookieAuth(c *gin.Context) {
+	h.cookieAuth(c, "full")
+}
+
+// SetupTokenCookieAuth performs OAuth using a claude.ai cookie for setup token (inference only)
+// POST /api/v1/admin/accounts/setup-token-cookie-auth
+func (h *OAuthHandler) SetupTokenCookieAuth(c *gin.Context) {
+	h.cookieAuth(c, "inference")
+}
+
+// ValidateCookieAccount checks a claude.ai cookie and returns the credentials
+// for a cookie account (no OAuth grant involved).
+// POST /api/v1/admin/accounts/cookie-validate
+func (h *OAuthHandler) ValidateCookieAccount(c *gin.Context) {
 	var req CookieAuthRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		response.BadRequest(c, "Invalid request: "+err.Error())
 		return
 	}
 
-	tokenInfo, err := h.oauthService.CookieAuth(c.Request.Context(), &service.CookieAuthInput{
-		SessionKey: req.SessionKey,
-		ProxyID:    req.ProxyID,
-		Scope:      "full",
+	info, err := h.cookieAccountSvc.Validate(c.Request.Context(), &service.ClaudeCookieAccountInput{
+		Cookie:  req.Cookie,
+		ProxyID: req.ProxyID,
 	})
 	if err != nil {
 		response.ErrorFrom(c, err)
 		return
 	}
 
-	response.Success(c, tokenInfo)
+	response.Success(c, map[string]any{
+		"credentials": info.Credentials(),
+		"extra":       info.Extra(),
+		"info":        info,
+	})
 }
 
-// SetupTokenCookieAuth performs OAuth using sessionKey for setup token (inference only)
-// POST /api/v1/admin/accounts/setup-token-cookie-auth
-func (h *OAuthHandler) SetupTokenCookieAuth(c *gin.Context) {
+func (h *OAuthHandler) cookieAuth(c *gin.Context, scope string) {
 	var req CookieAuthRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		response.BadRequest(c, "Invalid request: "+err.Error())
 		return
 	}
 
-	tokenInfo, err := h.oauthService.CookieAuth(c.Request.Context(), &service.CookieAuthInput{
-		SessionKey: req.SessionKey,
-		ProxyID:    req.ProxyID,
-		Scope:      "inference",
-	})
+	input, err := cookieAuthInput(&req, scope)
+	if err != nil {
+		response.BadRequest(c, err.Error())
+		return
+	}
+
+	tokenInfo, err := h.oauthService.CookieAuth(c.Request.Context(), input)
 	if err != nil {
 		response.ErrorFrom(c, err)
 		return

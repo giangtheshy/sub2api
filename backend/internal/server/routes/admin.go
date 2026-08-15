@@ -415,6 +415,9 @@ func registerAccountRoutes(admin *gin.RouterGroup, h *handler.Handlers, stepUpAu
 		accounts.POST("/exchange-setup-token-code", h.Admin.OAuth.ExchangeSetupTokenCode)
 		accounts.POST("/cookie-auth", h.Admin.OAuth.CookieAuth)
 		accounts.POST("/setup-token-cookie-auth", h.Admin.OAuth.SetupTokenCookieAuth)
+
+		// Claude.ai cookie account (no OAuth grant; works with stale sessions)
+		accounts.POST("/cookie-validate", h.Admin.OAuth.ValidateCookieAccount)
 	}
 }
 

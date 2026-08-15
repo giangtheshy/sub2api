@@ -123,6 +123,12 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 		return s.forwardBedrock(ctx, c, account, parsed, startTime)
 	}
 
+	// claude.ai cookie accounts do not speak the Anthropic API at all; they are
+	// driven through the claude.ai web endpoints instead.
+	if account != nil && account.IsClaudeCookie() {
+		return s.forwardClaudeWebCookie(ctx, c, account, parsed, startTime)
+	}
+
 	// Beta policy: evaluate once; block check + cache filter set for buildUpstreamRequest.
 	// Always overwrite the cache to prevent stale values from a previous retry with a different account.
 	if account.Platform == PlatformAnthropic && c != nil {

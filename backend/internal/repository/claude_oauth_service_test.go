@@ -53,9 +53,12 @@ func (s *ClaudeOAuthServiceSuite) TestGetOrganizationUUID() {
 			wantUUID: "org-1",
 			validate: func(captured requestCapture) {
 				require.Equal(s.T(), "/api/organizations", captured.path, "unexpected path")
-				require.Len(s.T(), captured.cookies, 1, "expected 1 cookie")
+				// The whole jar is replayed, not just sessionKey.
+				require.Len(s.T(), captured.cookies, 2, "expected the full cookie jar")
 				require.Equal(s.T(), "sessionKey", captured.cookies[0].Name)
 				require.Equal(s.T(), "sess", captured.cookies[0].Value)
+				require.Equal(s.T(), "lastActiveOrg", captured.cookies[1].Name)
+				require.Equal(s.T(), "org-1", captured.cookies[1].Value)
 			},
 		},
 		{
@@ -93,7 +96,7 @@ func (s *ClaudeOAuthServiceSuite) TestGetOrganizationUUID() {
 			s.client.baseURL = "http://in-process"
 			s.client.clientFactory = func(string) (*req.Client, error) { return newTestReqClient(rt), nil }
 
-			got, err := s.client.GetOrganizationUUID(context.Background(), "sess", "")
+			got, err := s.client.GetOrganizationUUID(context.Background(), "sessionKey=sess; lastActiveOrg=org-1", "")
 
 			if tt.wantErr {
 				require.Error(s.T(), err)
@@ -132,8 +135,9 @@ func (s *ClaudeOAuthServiceSuite) TestGetAuthorizationCode() {
 			validate: func(captured requestCapture) {
 				require.True(s.T(), strings.HasPrefix(captured.path, "/v1/oauth/") && strings.HasSuffix(captured.path, "/authorize"), "unexpected path: %s", captured.path)
 				require.Equal(s.T(), http.MethodPost, captured.method, "expected POST")
-				require.Len(s.T(), captured.cookies, 1, "expected 1 cookie")
+				require.Len(s.T(), captured.cookies, 2, "expected the full cookie jar")
 				require.Equal(s.T(), "sess", captured.cookies[0].Value)
+				require.Equal(s.T(), "sessionKeyV3", captured.cookies[1].Name)
 				require.Equal(s.T(), "org-1", captured.bodyJSON["organization_uuid"])
 				require.Equal(s.T(), oauth.ClientID, captured.bodyJSON["client_id"])
 				require.Equal(s.T(), oauth.RedirectURI, captured.bodyJSON["redirect_uri"])
@@ -171,7 +175,7 @@ func (s *ClaudeOAuthServiceSuite) TestGetAuthorizationCode() {
 			s.client.baseURL = "http://in-process"
 			s.client.clientFactory = func(string) (*req.Client, error) { return newTestReqClient(rt), nil }
 
-			code, err := s.client.GetAuthorizationCode(context.Background(), "sess", "org-1", oauth.ScopeInference, "cc", "st", "")
+			code, err := s.client.GetAuthorizationCode(context.Background(), "sessionKey=sess; sessionKeyV3=v3", "org-1", oauth.ScopeInference, "cc", "st", "")
 
 			if tt.wantErr {
 				require.Error(s.T(), err)

@@ -763,6 +763,7 @@ type GatewayService struct {
 	tlsFPProfileService   *TLSFingerprintProfileService
 	balanceNotifyService  *BalanceNotifyService
 	userPlatformQuotaRepo UserPlatformQuotaRepository
+	claudeWebClient       ClaudeWebClient // claude.ai web API（cookie 直连账号）
 }
 
 // NewGatewayService creates a new GatewayService
@@ -795,6 +796,7 @@ func NewGatewayService(
 	compositeResolver *CompositeRouteResolver,
 	balanceNotifyService *BalanceNotifyService,
 	userPlatformQuotaRepo UserPlatformQuotaRepository,
+	claudeWebClient ClaudeWebClient,
 ) *GatewayService {
 	userGroupRateTTL := resolveUserGroupRateCacheTTL(cfg)
 	modelsListTTL := resolveModelsListCacheTTL(cfg)
@@ -819,6 +821,7 @@ func NewGatewayService(
 		httpUpstream:          httpUpstream,
 		deferredService:       deferredService,
 		claudeTokenProvider:   claudeTokenProvider,
+		claudeWebClient:       claudeWebClient,
 		sessionLimitCache:     sessionLimitCache,
 		rpmCache:              rpmCache,
 		userGroupRateCache:    gocache.New(userGroupRateTTL, time.Minute),
@@ -1219,6 +1222,16 @@ func (s *GatewayService) GetAccessToken(ctx context.Context, account *Account) (
 		return apiKey, "apikey", nil
 	case AccountTypeBedrock:
 		return "", "bedrock", nil // Bedrock 使用 SigV4 签名或 API Key，由 forwardBedrock 处理
+	case AccountTypeCookie:
+		// claude.ai cookie 账号：凭证就是 cookie jar，由 forwardClaudeWebCookie 处理
+		if account.Platform != PlatformAnthropic {
+			return "", "", fmt.Errorf("unsupported cookie account platform: %s", account.Platform)
+		}
+		cookieJar := account.CookieJar()
+		if cookieJar == "" {
+			return "", "", errors.New("cookie_jar not found in credentials")
+		}
+		return cookieJar, "cookie", nil
 	case AccountTypeServiceAccount:
 		if account.Platform != PlatformAnthropic {
 			return "", "", fmt.Errorf("unsupported service account platform: %s", account.Platform)

@@ -15,22 +15,22 @@ import (
 // --- mock: ClaudeOAuthClient ---
 
 type mockClaudeOAuthClient struct {
-	getOrgUUIDFunc   func(ctx context.Context, sessionKey, proxyURL string) (string, error)
-	getAuthCodeFunc  func(ctx context.Context, sessionKey, orgUUID, scope, codeChallenge, state, proxyURL string) (string, error)
+	getOrgUUIDFunc   func(ctx context.Context, cookieHeader, proxyURL string) (string, error)
+	getAuthCodeFunc  func(ctx context.Context, cookieHeader, orgUUID, scope, codeChallenge, state, proxyURL string) (string, error)
 	exchangeCodeFunc func(ctx context.Context, code, codeVerifier, state, proxyURL string, isSetupToken bool) (*oauth.TokenResponse, error)
 	refreshTokenFunc func(ctx context.Context, refreshToken, proxyURL string) (*oauth.TokenResponse, error)
 }
 
-func (m *mockClaudeOAuthClient) GetOrganizationUUID(ctx context.Context, sessionKey, proxyURL string) (string, error) {
+func (m *mockClaudeOAuthClient) GetOrganizationUUID(ctx context.Context, cookieHeader, proxyURL string) (string, error) {
 	if m.getOrgUUIDFunc != nil {
-		return m.getOrgUUIDFunc(ctx, sessionKey, proxyURL)
+		return m.getOrgUUIDFunc(ctx, cookieHeader, proxyURL)
 	}
 	panic("GetOrganizationUUID not implemented")
 }
 
-func (m *mockClaudeOAuthClient) GetAuthorizationCode(ctx context.Context, sessionKey, orgUUID, scope, codeChallenge, state, proxyURL string) (string, error) {
+func (m *mockClaudeOAuthClient) GetAuthorizationCode(ctx context.Context, cookieHeader, orgUUID, scope, codeChallenge, state, proxyURL string) (string, error) {
 	if m.getAuthCodeFunc != nil {
-		return m.getAuthCodeFunc(ctx, sessionKey, orgUUID, scope, codeChallenge, state, proxyURL)
+		return m.getAuthCodeFunc(ctx, cookieHeader, orgUUID, scope, codeChallenge, state, proxyURL)
 	}
 	panic("GetAuthorizationCode not implemented")
 }

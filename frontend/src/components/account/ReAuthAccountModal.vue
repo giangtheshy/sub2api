@@ -126,12 +126,14 @@
         :show-help="isAnthropic"
         :show-proxy-warning="isAnthropic"
         :show-cookie-option="isAnthropic"
+        :show-cookie-file-option="isAnthropic"
         :allow-multiple="false"
         :method-label="t('admin.accounts.inputMethod')"
         :platform="isOpenAI ? 'openai' : isGemini ? 'gemini' : isAntigravity ? 'antigravity' : 'anthropic'"
         :show-project-id="isGemini && geminiOAuthType === 'code_assist'"
         @generate-url="handleGenerateUrl"
         @cookie-auth="handleCookieAuth"
+        @import-cookie-file="handleCookieAuth"
       />
 
     </div>
@@ -186,6 +188,7 @@ import { useAppStore } from '@/stores/app'
 import { adminAPI } from '@/api/admin'
 import {
   useAccountOAuth,
+  resolveAuthErrorMessage,
   type AddMethod,
   type AuthInputMethod
 } from '@/composables/useAccountOAuth'
@@ -533,8 +536,11 @@ const handleCookieAuth = async (sessionKey: string) => {
     emit('reauthorized')
     handleClose()
   } catch (error: any) {
-    claudeOAuth.error.value =
-      error.response?.data?.detail || t('admin.accounts.oauth.cookieAuthFailed')
+    claudeOAuth.error.value = resolveAuthErrorMessage(
+      error,
+      t,
+      'admin.accounts.oauth.cookieAuthFailed'
+    )
   } finally {
     claudeOAuth.loading.value = false
   }

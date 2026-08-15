@@ -32,27 +32,102 @@ type claudeOAuthService struct {
 	clientFactory func(proxyURL string) (*req.Client, error)
 }
 
-func (s *claudeOAuthService) GetOrganizationUUID(ctx context.Context, sessionKey, proxyURL string) (string, error) {
+// classifyAuthorizeError turns a failed /v1/oauth/{org}/authorize response into
+// a typed error the panel can render as an actionable message. It returns nil
+// when the failure is not one of the known cases.
+func classifyAuthorizeError(statusCode int, body []byte) error {
+	if statusCode != http.StatusForbidden {
+		return nil
+	}
+
+	var parsed struct {
+		Error struct {
+			Message string `json:"message"`
+			Details struct {
+				ErrorCode string `json:"error_code"`
+			} `json:"details"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		return nil
+	}
+
+	switch {
+	case parsed.Error.Details.ErrorCode == "session_stale_relogin",
+		strings.Contains(parsed.Error.Message, "not fresh enough"):
+		return service.ErrClaudeSessionStale
+	case strings.Contains(parsed.Error.Message, "Invalid authorization for organization"):
+		return service.ErrClaudeOrgUnavailable
+	case strings.Contains(parsed.Error.Message, "Invalid authorization"):
+		return service.ErrClaudeCookieInvalid
+	}
+	return nil
+}
+
+// claudeOrganization is the subset of /api/organizations we rely on.
+type claudeOrganization struct {
+	UUID         string   `json:"uuid"`
+	Name         string   `json:"name"`
+	RavenType    *string  `json:"raven_type"` // nil for personal, "team" for team organization
+	Capabilities []string `json:"capabilities"`
+}
+
+func (o claudeOrganization) hasCapability(want string) bool {
+	for _, c := range o.Capabilities {
+		if c == want {
+			return true
+		}
+	}
+	return false
+}
+
+// isChatOrg reports whether the org can drive claude.ai chat. API-only orgs
+// (capabilities ["api","api_individual"]) cannot, and asking them for an OAuth
+// code returns "Invalid authorization for organization".
+func (o claudeOrganization) isChatOrg() bool {
+	return o.hasCapability("chat")
+}
+
+// selectOrganization picks the org an OAuth grant should target.
+//
+// Preference order: a subscription org (claude_max/claude_pro), then a team org,
+// then any chat-capable org, then the first org as a last resort. Ordering
+// matters because /api/organizations returns API-only orgs alongside the
+// subscription one and their order is not guaranteed.
+func selectOrganization(orgs []claudeOrganization) (claudeOrganization, string) {
+	for _, org := range orgs {
+		if org.isChatOrg() && (org.hasCapability("claude_max") || org.hasCapability("claude_pro")) {
+			return org, "subscription"
+		}
+	}
+	for _, org := range orgs {
+		if org.isChatOrg() && org.RavenType != nil && *org.RavenType == "team" {
+			return org, "team"
+		}
+	}
+	for _, org := range orgs {
+		if org.isChatOrg() {
+			return org, "chat"
+		}
+	}
+	return orgs[0], "fallback"
+}
+
+func (s *claudeOAuthService) GetOrganizationUUID(ctx context.Context, cookieHeader, proxyURL string) (string, error) {
 	client, err := s.clientFactory(proxyURL)
 	if err != nil {
 		return "", fmt.Errorf("create HTTP client: %w", err)
 	}
 
-	var orgs []struct {
-		UUID      string  `json:"uuid"`
-		Name      string  `json:"name"`
-		RavenType *string `json:"raven_type"` // nil for personal, "team" for team organization
-	}
+	var orgs []claudeOrganization
 
 	targetURL := s.baseURL + "/api/organizations"
 	logger.LegacyPrintf("repository.claude_oauth", "[OAuth] Step 1: Getting organization UUID from %s", targetURL)
 
 	resp, err := client.R().
 		SetContext(ctx).
-		SetCookies(&http.Cookie{
-			Name:  "sessionKey",
-			Value: sessionKey,
-		}).
+		SetHeader("Cookie", cookieHeader).
+		SetHeader("Accept", "application/json").
 		SetSuccessResult(&orgs).
 		Get(targetURL)
 
@@ -71,27 +146,14 @@ func (s *claudeOAuthService) GetOrganizationUUID(ctx context.Context, sessionKey
 		return "", fmt.Errorf("no organizations found")
 	}
 
-	// 如果只有一个组织，直接使用
-	if len(orgs) == 1 {
-		logger.LegacyPrintf("repository.claude_oauth", "[OAuth] Step 1 SUCCESS - Single org found, UUID: %s, Name: %s", orgs[0].UUID, orgs[0].Name)
-		return orgs[0].UUID, nil
-	}
-
-	// 如果有多个组织，优先选择 raven_type 为 "team" 的组织
-	for _, org := range orgs {
-		if org.RavenType != nil && *org.RavenType == "team" {
-			logger.LegacyPrintf("repository.claude_oauth", "[OAuth] Step 1 SUCCESS - Selected team org, UUID: %s, Name: %s, RavenType: %s",
-				org.UUID, org.Name, *org.RavenType)
-			return org.UUID, nil
-		}
-	}
-
-	// 如果没有 team 类型的组织，使用第一个
-	logger.LegacyPrintf("repository.claude_oauth", "[OAuth] Step 1 SUCCESS - No team org found, using first org, UUID: %s, Name: %s", orgs[0].UUID, orgs[0].Name)
-	return orgs[0].UUID, nil
+	selected, reason := selectOrganization(orgs)
+	logger.LegacyPrintf("repository.claude_oauth",
+		"[OAuth] Step 1 SUCCESS - Selected org (%s of %d), UUID: %s, Name: %s, Capabilities: %v",
+		reason, len(orgs), selected.UUID, selected.Name, selected.Capabilities)
+	return selected.UUID, nil
 }
 
-func (s *claudeOAuthService) GetAuthorizationCode(ctx context.Context, sessionKey, orgUUID, scope, codeChallenge, state, proxyURL string) (string, error) {
+func (s *claudeOAuthService) GetAuthorizationCode(ctx context.Context, cookieHeader, orgUUID, scope, codeChallenge, state, proxyURL string) (string, error) {
 	client, err := s.clientFactory(proxyURL)
 	if err != nil {
 		return "", fmt.Errorf("create HTTP client: %w", err)
@@ -120,10 +182,7 @@ func (s *claudeOAuthService) GetAuthorizationCode(ctx context.Context, sessionKe
 
 	resp, err := client.R().
 		SetContext(ctx).
-		SetCookies(&http.Cookie{
-			Name:  "sessionKey",
-			Value: sessionKey,
-		}).
+		SetHeader("Cookie", cookieHeader).
 		SetHeader("Accept", "application/json").
 		SetHeader("Accept-Language", "en-US,en;q=0.9").
 		SetHeader("Cache-Control", "no-cache").
@@ -142,6 +201,9 @@ func (s *claudeOAuthService) GetAuthorizationCode(ctx context.Context, sessionKe
 	logger.LegacyPrintf("repository.claude_oauth", "[OAuth] Step 2 Response - Status: %d, Body: %s", resp.StatusCode, logredact.RedactJSON(resp.Bytes()))
 
 	if !resp.IsSuccessState() {
+		if err := classifyAuthorizeError(resp.StatusCode, resp.Bytes()); err != nil {
+			return "", err
+		}
 		return "", fmt.Errorf("failed to get authorization code: status %d, body: %s", resp.StatusCode, resp.String())
 	}
 

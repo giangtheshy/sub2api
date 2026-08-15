@@ -9,6 +9,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/pkg/oauth"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/openai"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/xai"
+	"github.com/Wei-Shaw/sub2api/internal/util/claudecookie"
 )
 
 // OpenAIOAuthClient interface for OpenAI OAuth operations
@@ -34,10 +35,13 @@ type GrokOAuthTokenService interface {
 	BuildAccountCredentials(tokenInfo *GrokTokenInfo) map[string]any
 }
 
-// ClaudeOAuthClient handles HTTP requests for Claude OAuth flows
+// ClaudeOAuthClient handles HTTP requests for Claude OAuth flows.
+//
+// cookieHeader is a full "name=value; name=value" Cookie header rather than a
+// bare sessionKey, so an operator's browser cookie export can be replayed as-is.
 type ClaudeOAuthClient interface {
-	GetOrganizationUUID(ctx context.Context, sessionKey, proxyURL string) (string, error)
-	GetAuthorizationCode(ctx context.Context, sessionKey, orgUUID, scope, codeChallenge, state, proxyURL string) (string, error)
+	GetOrganizationUUID(ctx context.Context, cookieHeader, proxyURL string) (string, error)
+	GetAuthorizationCode(ctx context.Context, cookieHeader, orgUUID, scope, codeChallenge, state, proxyURL string) (string, error)
 	ExchangeCodeForToken(ctx context.Context, code, codeVerifier, state, proxyURL string, isSetupToken bool) (*oauth.TokenResponse, error)
 	RefreshToken(ctx context.Context, refreshToken, proxyURL string) (*oauth.TokenResponse, error)
 }
@@ -178,8 +182,19 @@ func (s *OAuthService) ExchangeCode(ctx context.Context, input *ExchangeCodeInpu
 // CookieAuthInput represents the input for cookie-based authentication
 type CookieAuthInput struct {
 	SessionKey string
-	ProxyID    *int64
-	Scope      string // "full" or "inference"
+	// CookieHeader is the full Cookie header to replay against claude.ai. When
+	// empty it is derived from SessionKey, preserving the single-key callers.
+	CookieHeader string
+	ProxyID      *int64
+	Scope        string // "full" or "inference"
+}
+
+// cookieHeader returns the jar to send, falling back to the bare sessionKey.
+func (in *CookieAuthInput) cookieHeader() string {
+	if in.CookieHeader != "" {
+		return in.CookieHeader
+	}
+	return claudecookie.JarForSessionKey(in.SessionKey)
 }
 
 // CookieAuth performs OAuth using sessionKey (cookie-based auto-auth)
@@ -202,8 +217,13 @@ func (s *OAuthService) CookieAuth(ctx context.Context, input *CookieAuthInput) (
 		isSetupToken = true
 	}
 
-	// Step 1: Get organization info using sessionKey
-	orgUUID, err := s.getOrganizationUUID(ctx, input.SessionKey, proxyURL)
+	cookieHeader := input.cookieHeader()
+	if cookieHeader == "" {
+		return nil, claudecookie.ErrNoSessionKey
+	}
+
+	// Step 1: Get organization info using the cookie jar
+	orgUUID, err := s.getOrganizationUUID(ctx, cookieHeader, proxyURL)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get organization info: %w", err)
 	}
@@ -221,7 +241,7 @@ func (s *OAuthService) CookieAuth(ctx context.Context, input *CookieAuthInput) (
 	}
 
 	// Step 3: Get authorization code using cookie
-	authCode, err := s.getAuthorizationCode(ctx, input.SessionKey, orgUUID, scope, codeChallenge, state, proxyURL)
+	authCode, err := s.getAuthorizationCode(ctx, cookieHeader, orgUUID, scope, codeChallenge, state, proxyURL)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get authorization code: %w", err)
 	}
@@ -241,14 +261,14 @@ func (s *OAuthService) CookieAuth(ctx context.Context, input *CookieAuthInput) (
 	return tokenInfo, nil
 }
 
-// getOrganizationUUID gets the organization UUID from claude.ai using sessionKey
-func (s *OAuthService) getOrganizationUUID(ctx context.Context, sessionKey, proxyURL string) (string, error) {
-	return s.oauthClient.GetOrganizationUUID(ctx, sessionKey, proxyURL)
+// getOrganizationUUID gets the organization UUID from claude.ai using the cookie jar
+func (s *OAuthService) getOrganizationUUID(ctx context.Context, cookieHeader, proxyURL string) (string, error) {
+	return s.oauthClient.GetOrganizationUUID(ctx, cookieHeader, proxyURL)
 }
 
-// getAuthorizationCode gets the authorization code using sessionKey
-func (s *OAuthService) getAuthorizationCode(ctx context.Context, sessionKey, orgUUID, scope, codeChallenge, state, proxyURL string) (string, error) {
-	return s.oauthClient.GetAuthorizationCode(ctx, sessionKey, orgUUID, scope, codeChallenge, state, proxyURL)
+// getAuthorizationCode gets the authorization code using the cookie jar
+func (s *OAuthService) getAuthorizationCode(ctx context.Context, cookieHeader, orgUUID, scope, codeChallenge, state, proxyURL string) (string, error) {
+	return s.oauthClient.GetAuthorizationCode(ctx, cookieHeader, orgUUID, scope, codeChallenge, state, proxyURL)
 }
 
 // exchangeCodeForToken exchanges authorization code for tokens
