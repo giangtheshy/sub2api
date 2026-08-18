@@ -999,6 +999,22 @@
       <div v-if="form.platform === 'antigravity'" class="border-t border-gray-200 pt-4 dark:border-dark-600">
         <label class="input-label">{{ t('admin.accounts.modelRestriction') }}</label>
 
+        <!-- 排除列表：与白名单互补。白名单是"只允许这些"（默认关闭，新模型自动被拒），
+             排除是"允许其余，除了这些"（默认开放，新模型自动可用）。两者意图相反，
+             无法互相替代；排除在后端优先于白名单与透传短路生效。 -->
+        <div class="mt-4 rounded-lg border border-gray-200 p-3 dark:border-dark-600">
+          <label class="input-label">{{ t('admin.accounts.excludedModels.title') }}</label>
+          <p class="mb-2 text-xs text-gray-500 dark:text-gray-400">
+            {{ t('admin.accounts.excludedModels.hint') }}
+          </p>
+          <textarea
+            v-model="excludedModelsText"
+            rows="3"
+            class="input font-mono text-xs"
+            :placeholder="t('admin.accounts.excludedModels.placeholder')"
+          ></textarea>
+        </div>
+
         <!-- Mapping Mode Only (no toggle for Antigravity) -->
         <div>
           <div class="mb-3 rounded-lg bg-purple-50 p-3 dark:bg-purple-900/20">
@@ -1187,6 +1203,22 @@
         <!-- Model Restriction Section (Antigravity 已在上层条件排除) -->
         <div class="border-t border-gray-200 pt-4 dark:border-dark-600">
           <label class="input-label">{{ t('admin.accounts.modelRestriction') }}</label>
+
+          <!-- 排除列表：与白名单互补。白名单是"只允许这些"（默认关闭，新模型自动被拒），
+               排除是"允许其余，除了这些"（默认开放，新模型自动可用）。两者意图相反，
+               无法互相替代；排除在后端优先于白名单与透传短路生效。 -->
+          <div class="mt-4 rounded-lg border border-gray-200 p-3 dark:border-dark-600">
+            <label class="input-label">{{ t('admin.accounts.excludedModels.title') }}</label>
+            <p class="mb-2 text-xs text-gray-500 dark:text-gray-400">
+              {{ t('admin.accounts.excludedModels.hint') }}
+            </p>
+            <textarea
+              v-model="excludedModelsText"
+              rows="3"
+              class="input font-mono text-xs"
+              :placeholder="t('admin.accounts.excludedModels.placeholder')"
+            ></textarea>
+          </div>
 
           <div
             v-if="isOpenAIModelRestrictionDisabled"
@@ -1706,6 +1738,22 @@
         <div class="border-t border-gray-200 pt-4 dark:border-dark-600">
           <label class="input-label">{{ t('admin.accounts.modelRestriction') }}</label>
 
+          <!-- 排除列表：与白名单互补。白名单是"只允许这些"（默认关闭，新模型自动被拒），
+               排除是"允许其余，除了这些"（默认开放，新模型自动可用）。两者意图相反，
+               无法互相替代；排除在后端优先于白名单与透传短路生效。 -->
+          <div class="mt-4 rounded-lg border border-gray-200 p-3 dark:border-dark-600">
+            <label class="input-label">{{ t('admin.accounts.excludedModels.title') }}</label>
+            <p class="mb-2 text-xs text-gray-500 dark:text-gray-400">
+              {{ t('admin.accounts.excludedModels.hint') }}
+            </p>
+            <textarea
+              v-model="excludedModelsText"
+              rows="3"
+              class="input font-mono text-xs"
+              :placeholder="t('admin.accounts.excludedModels.placeholder')"
+            ></textarea>
+          </div>
+
           <!-- Mode Toggle -->
           <div class="mb-4 flex gap-2">
             <button
@@ -2031,6 +2079,22 @@
         class="border-t border-gray-200 pt-4 dark:border-dark-600"
       >
         <label class="input-label">{{ t('admin.accounts.modelRestriction') }}</label>
+
+        <!-- 排除列表：与白名单互补。白名单是"只允许这些"（默认关闭，新模型自动被拒），
+             排除是"允许其余，除了这些"（默认开放，新模型自动可用）。两者意图相反，
+             无法互相替代；排除在后端优先于白名单与透传短路生效。 -->
+        <div class="mt-4 rounded-lg border border-gray-200 p-3 dark:border-dark-600">
+          <label class="input-label">{{ t('admin.accounts.excludedModels.title') }}</label>
+          <p class="mb-2 text-xs text-gray-500 dark:text-gray-400">
+            {{ t('admin.accounts.excludedModels.hint') }}
+          </p>
+          <textarea
+            v-model="excludedModelsText"
+            rows="3"
+            class="input font-mono text-xs"
+            :placeholder="t('admin.accounts.excludedModels.placeholder')"
+          ></textarea>
+        </div>
 
         <div
           v-if="isOpenAIModelRestrictionDisabled"
@@ -5270,6 +5334,31 @@ const formatDateTimeLocal = formatDateTimeLocalInput
 const parseDateTimeLocal = parseDateTimeLocalInput
 
 // Create account and handle success/failure
+// 排除列表以纯文本编辑：它要能写出目录里尚不存在的模型名与通配符，
+// 这正是白名单选择器（会剔除 *）做不到的事。
+const excludedModelsText = ref('')
+
+const parseExcludedModelsText = (text: string): string[] => {
+  const seen = new Set<string>()
+  const models: string[] = []
+  for (const line of text.split('\n')) {
+    const model = line.trim()
+    if (!model) continue
+    const key = model.toLowerCase()
+    if (seen.has(key)) continue
+    seen.add(key)
+    models.push(model)
+  }
+  return models
+}
+
+const applyExcludedModels = (credentials: Record<string, unknown>) => {
+  const models = parseExcludedModelsText(excludedModelsText.value)
+  if (models.length > 0) {
+    credentials.excluded_models = models
+  }
+}
+
 const createAccountAndFinish = async (
   platform: AccountPlatform,
   type: AccountType,
@@ -5279,6 +5368,10 @@ const createAccountAndFinish = async (
   if (!applyTempUnschedConfig(credentials)) {
     return
   }
+  // 所有创建路径（OAuth / apikey / bedrock / upstream / cookie …）都汇入这里，
+  // 因此排除列表只在此处注入一次，而不是散落到九个 model_mapping 写入点——
+  // 后者只要漏掉一个，该类型账号的排除就会静默失效。
+  applyExcludedModels(credentials)
   // Inject quota limits for apikey/bedrock accounts
   let finalExtra = extra
   if (type === 'apikey' || type === 'bedrock') {
@@ -6359,7 +6452,13 @@ const handleCreateCookieAccount = async (content: string) => {
       ...(form.proxy_id ? { proxy_id: form.proxy_id } : {})
     })
 
-    const name = form.name?.trim() || validated.info.email_address || validated.info.org_name
+    // The account name is required by the API, so never let it end up empty:
+    // claude.ai reports no email for some organizations and no name for others.
+    const name =
+      form.name?.trim() ||
+      validated.info.email_address ||
+      validated.info.org_name ||
+      'claude-cookie'
 
     await adminAPI.accounts.create({
       name,

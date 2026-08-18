@@ -1047,6 +1047,12 @@ export default {
         bufferRangeError: 'Safety buffer must be between 0 and 99.99',
         sumTooHigh: 'Min gross margin plus safety buffer must be less than 100%, otherwise every account would be excluded'
       },
+      allowedModels: {
+        title: 'Allowed Models',
+        hint: 'One per line. Trailing wildcards are supported (claude-sonnet-*). Leave empty to allow every model.',
+        placeholder: 'claude-sonnet-*\nclaude-haiku-4-5',
+        warning: 'Enforced before dispatch: a model outside this list is rejected with 403 and is hidden from /v1/models.'
+      },
       modelsList: {
         title: 'Custom /v1/models Model List',
         hint: 'Only changes the /v1/models response. Whitelist model calls and account routing are unchanged.',

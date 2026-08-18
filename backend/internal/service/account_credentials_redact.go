@@ -7,6 +7,10 @@ var SensitiveCredentialKeys = []string{
 	"access_token", "refresh_token", "id_token", "agent_private_key",
 	// API Key 类
 	"api_key", "session_key", "cookie",
+	// claude.ai cookie 账号：cookie_jar 才是网关实际重放的凭证（"cookie" 是另一种
+	// 短期 SSO 密钥，二者不同）。org_uuid 与该 jar 绑定，缺失同样会导致账号不可用，
+	// 因此两者都必须随敏感键一起脱敏并在部分更新时保留。
+	"cookie_jar", "org_uuid",
 	// Grok Web SSO / password (must never persist or echo after Build OAuth)
 	"password", "sso_token", "sso", "sso-rw", "clearTextPassword",
 	// 云服务凭据

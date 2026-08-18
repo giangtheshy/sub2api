@@ -1044,6 +1044,12 @@ export default {
         bufferRangeError: '安全缓冲应在 0 到 99.99 之间',
         sumTooHigh: '最低毛利率与安全缓冲之和必须小于 100%，否则将排除全部账号'
       },
+      allowedModels: {
+        title: '模型准入白名单',
+        hint: '每行一个，支持末尾通配符（claude-sonnet-*）。留空表示不限制。',
+        placeholder: 'claude-sonnet-*\nclaude-haiku-4-5',
+        warning: '在调度前强制生效：不在列表中的模型将以 403 拒绝，并从 /v1/models 中隐藏。'
+      },
       modelsList: {
         title: '自定义 /v1/models 模型列表',
         hint: '仅影响 /v1/models 展示结果，不影响白名单模型调用和账号调度。',

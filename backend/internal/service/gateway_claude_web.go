@@ -115,10 +115,10 @@ func (s *GatewayService) forwardClaudeWebCookie(
 		OutputTokens: relayed.outputTokens,
 	}
 	if usage.InputTokens == 0 {
-		usage.InputTokens = estimateTokensForText(prompt.Transcript())
+		usage.InputTokens = estimateClaudeTokens(prompt.Transcript())
 	}
 	if usage.OutputTokens == 0 && relayed.text.Len() > 0 {
-		usage.OutputTokens = estimateTokensForText(relayed.text.String())
+		usage.OutputTokens = estimateClaudeTokens(relayed.text.String())
 	}
 
 	result := &ForwardResult{
@@ -131,8 +131,17 @@ func (s *GatewayService) forwardClaudeWebCookie(
 		ClientDisconnect:      relayed.clientDisconnect,
 		UpstreamResponseModel: relayed.upstreamModel,
 	}
-	if usedModel != "" && usedModel != requestModel {
+	switch {
+	case usedModel != "" && usedModel != requestModel:
 		result.UpstreamModel = usedModel
+	case usedModel == "" && relayed.upstreamModel != "" && relayed.upstreamModel != requestModel:
+		// claude.ai chose the model itself, because the requested one is not on
+		// this plan and openClaudeWebStream retried without the field. Leaving
+		// UpstreamModel empty here made the substitution invisible: upstream_model
+		// stayed NULL, so no report could attribute the request to what actually
+		// served it, and billableModelWithFallback had no priced model to fall
+		// back to when the requested name is unknown to the price table.
+		result.UpstreamModel = relayed.upstreamModel
 	}
 	return result, nil
 }

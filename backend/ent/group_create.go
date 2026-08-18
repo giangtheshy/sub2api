@@ -662,6 +662,12 @@ func (_c *GroupCreate) SetSupportedModelScopes(v []string) *GroupCreate {
 	return _c
 }
 
+// SetAllowedModels sets the "allowed_models" field.
+func (_c *GroupCreate) SetAllowedModels(v []string) *GroupCreate {
+	_c.mutation.SetAllowedModels(v)
+	return _c
+}
+
 // SetSortOrder sets the "sort_order" field.
 func (_c *GroupCreate) SetSortOrder(v int) *GroupCreate {
 	_c.mutation.SetSortOrder(v)
@@ -1083,6 +1089,10 @@ func (_c *GroupCreate) defaults() error {
 		v := group.DefaultSupportedModelScopes
 		_c.mutation.SetSupportedModelScopes(v)
 	}
+	if _, ok := _c.mutation.AllowedModels(); !ok {
+		v := group.DefaultAllowedModels
+		_c.mutation.SetAllowedModels(v)
+	}
 	if _, ok := _c.mutation.SortOrder(); !ok {
 		v := group.DefaultSortOrder
 		_c.mutation.SetSortOrder(v)
@@ -1276,6 +1286,9 @@ func (_c *GroupCreate) check() error {
 	}
 	if _, ok := _c.mutation.SupportedModelScopes(); !ok {
 		return &ValidationError{Name: "supported_model_scopes", err: errors.New(`ent: missing required field "Group.supported_model_scopes"`)}
+	}
+	if _, ok := _c.mutation.AllowedModels(); !ok {
+		return &ValidationError{Name: "allowed_models", err: errors.New(`ent: missing required field "Group.allowed_models"`)}
 	}
 	if _, ok := _c.mutation.SortOrder(); !ok {
 		return &ValidationError{Name: "sort_order", err: errors.New(`ent: missing required field "Group.sort_order"`)}
@@ -1547,6 +1560,10 @@ func (_c *GroupCreate) createSpec() (*Group, *sqlgraph.CreateSpec) {
 	if value, ok := _c.mutation.SupportedModelScopes(); ok {
 		_spec.SetField(group.FieldSupportedModelScopes, field.TypeJSON, value)
 		_node.SupportedModelScopes = value
+	}
+	if value, ok := _c.mutation.AllowedModels(); ok {
+		_spec.SetField(group.FieldAllowedModels, field.TypeJSON, value)
+		_node.AllowedModels = value
 	}
 	if value, ok := _c.mutation.SortOrder(); ok {
 		_spec.SetField(group.FieldSortOrder, field.TypeInt, value)
@@ -2573,6 +2590,18 @@ func (u *GroupUpsert) SetSupportedModelScopes(v []string) *GroupUpsert {
 // UpdateSupportedModelScopes sets the "supported_model_scopes" field to the value that was provided on create.
 func (u *GroupUpsert) UpdateSupportedModelScopes() *GroupUpsert {
 	u.SetExcluded(group.FieldSupportedModelScopes)
+	return u
+}
+
+// SetAllowedModels sets the "allowed_models" field.
+func (u *GroupUpsert) SetAllowedModels(v []string) *GroupUpsert {
+	u.Set(group.FieldAllowedModels, v)
+	return u
+}
+
+// UpdateAllowedModels sets the "allowed_models" field to the value that was provided on create.
+func (u *GroupUpsert) UpdateAllowedModels() *GroupUpsert {
+	u.SetExcluded(group.FieldAllowedModels)
 	return u
 }
 
@@ -3765,6 +3794,20 @@ func (u *GroupUpsertOne) SetSupportedModelScopes(v []string) *GroupUpsertOne {
 func (u *GroupUpsertOne) UpdateSupportedModelScopes() *GroupUpsertOne {
 	return u.Update(func(s *GroupUpsert) {
 		s.UpdateSupportedModelScopes()
+	})
+}
+
+// SetAllowedModels sets the "allowed_models" field.
+func (u *GroupUpsertOne) SetAllowedModels(v []string) *GroupUpsertOne {
+	return u.Update(func(s *GroupUpsert) {
+		s.SetAllowedModels(v)
+	})
+}
+
+// UpdateAllowedModels sets the "allowed_models" field to the value that was provided on create.
+func (u *GroupUpsertOne) UpdateAllowedModels() *GroupUpsertOne {
+	return u.Update(func(s *GroupUpsert) {
+		s.UpdateAllowedModels()
 	})
 }
 
@@ -5155,6 +5198,20 @@ func (u *GroupUpsertBulk) SetSupportedModelScopes(v []string) *GroupUpsertBulk {
 func (u *GroupUpsertBulk) UpdateSupportedModelScopes() *GroupUpsertBulk {
 	return u.Update(func(s *GroupUpsert) {
 		s.UpdateSupportedModelScopes()
+	})
+}
+
+// SetAllowedModels sets the "allowed_models" field.
+func (u *GroupUpsertBulk) SetAllowedModels(v []string) *GroupUpsertBulk {
+	return u.Update(func(s *GroupUpsert) {
+		s.SetAllowedModels(v)
+	})
+}
+
+// UpdateAllowedModels sets the "allowed_models" field to the value that was provided on create.
+func (u *GroupUpsertBulk) UpdateAllowedModels() *GroupUpsertBulk {
+	return u.Update(func(s *GroupUpsert) {
+		s.UpdateAllowedModels()
 	})
 }
 

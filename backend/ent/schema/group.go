@@ -230,6 +230,12 @@ func (Group) Fields() []ent.Field {
 			SchemaType(map[string]string{dialect.Postgres: "jsonb"}).
 			Comment("支持的模型系列：claude, gemini_text, gemini_image"),
 
+		// 分组级模型准入白名单 (added by migration 224)
+		field.JSON("allowed_models", []string{}).
+			Default([]string{}).
+			SchemaType(map[string]string{dialect.Postgres: "jsonb"}).
+			Comment("模型准入白名单：空数组=不限制；支持末尾通配符。调度前强制生效，与 models_list_config 仅影响展示不同"),
+
 		// 分组排序 (added by migration 052)
 		field.Int("sort_order").
 			Default(0).

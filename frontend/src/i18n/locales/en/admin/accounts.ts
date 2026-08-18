@@ -351,6 +351,35 @@ export default {
           unavailableDesc: 'Unavailable - pause 30 minutes'
         }
       },
+      claudeCli: {
+        menuLabel: 'Export for Claude CLI',
+        title: 'Use this account with Claude CLI',
+        intro: 'Paste this file on the machine running Claude Code and it will use "{name}" without logging in to Anthropic again.',
+        fileLabel: 'File contents',
+        pathLabel: 'Save it here',
+        pathHint: 'The name starts with a dot: .credentials.json — a file named credentials.json is silently ignored. Rename the downloaded file after saving it.',
+        lifetime: 'Access token valid for about {hours}h {minutes}m.',
+        includeRefreshToken: 'Also include the refresh token',
+        includeRefreshTokenHint: 'Leave this off to keep the account here. Without a refresh token the CLI cannot renew the credential, so it can never take this account away from sub2api — when it expires, just export again.',
+        copy: 'Copy',
+        copied: 'Copied to clipboard',
+        copyFailed: 'Could not copy — select the text and copy it manually.',
+        download: 'Download file',
+        loadFailed: 'Could not export credentials for this account.',
+        warnings: {
+          refresh_token_rotation: 'Anthropic rotates refresh tokens, so this credential has one owner at a time. Once Claude CLI refreshes it, the copy stored here stops working and this account will fail until you re-authorize it — and the reverse is also true.',
+          refresh_token_withheld: 'The file carries an access token only, so Claude CLI cannot renew it and cannot rotate this account away from sub2api. When it expires the CLI will ask you to log in — come back and export again instead; sub2api will have refreshed the account by then.',
+          no_refresh_token: 'This account has no refresh token, so sub2api cannot refresh it either. Exporting again later would only produce another expired token — re-authorize the account first.',
+          access_token_expired: 'The access token has already expired, so the CLI will refresh on first use — breaking this account immediately. Refresh the account here first if you want to keep using it.',
+          inferred_scopes: 'No scope was stored for this account, so the default for its type was used. If the CLI reports missing permissions, re-authorize the account.',
+          limited_scopes: 'This credential lacks user:profile, so parts of Claude CLI that need it will not work.'
+        }
+      },
+      excludedModels: {
+        title: 'Excluded models',
+        hint: 'One per line; trailing wildcards allowed (claude-opus-*). Everything else stays available, so models released later work without editing this. Exclusions override the whitelist and passthrough.',
+        placeholder: 'claude-opus-*'
+      },
       clearRateLimit: 'Clear Rate Limit',
       resetQuota: 'Reset Quota',
       quotaLimit: 'Quota Limit',

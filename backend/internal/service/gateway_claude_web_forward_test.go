@@ -198,8 +198,12 @@ func TestForwardClaudeWebCookieFallsBackWhenModelUnavailable(t *testing.T) {
 	if _, present := fake.sentPayloads[1]["model"]; present {
 		t.Error("retry payload still carries a model field")
 	}
-	if got.UpstreamModel != "" {
-		t.Errorf("UpstreamModel = %q, want empty after falling back to the default", got.UpstreamModel)
+	// The fallback drops the model field, so claude.ai picks its own. What it
+	// picked must still be recorded: leaving this empty made the substitution
+	// invisible in usage_logs, which is exactly how an Opus response came to be
+	// billed at Sonnet prices with nothing in the ledger to show for it.
+	if got.UpstreamModel != "claude-opus-5" {
+		t.Errorf("UpstreamModel = %q, want the model claude.ai actually served", got.UpstreamModel)
 	}
 	if fake.deletedConversations != 1 {
 		t.Errorf("deletedConversations = %d, want 1", fake.deletedConversations)
@@ -334,23 +338,30 @@ func TestForwardClaudeWebCookieRejectsMissingCredentials(t *testing.T) {
 	}
 }
 
+// This test originally asserted that GetAccessToken hands back the cookie jar.
+// That was wrong: every caller of GetAccessToken puts the result into an
+// Authorization or x-api-key header aimed at api.anthropic.com, so returning the
+// jar shipped a live claude.ai session upstream and the resulting 401 permanently
+// disabled the account through handleAuthError. The only legitimate consumer,
+// forwardClaudeWebCookie, reads account.CookieJar() directly and never calls
+// this. The credential now fails closed here.
 func TestGetAccessTokenForCookieAccount(t *testing.T) {
 	svc := &GatewayService{}
 	account := newCookieAccountForTest()
 
 	token, kind, err := svc.GetAccessToken(context.Background(), account)
-	if err != nil {
-		t.Fatalf("GetAccessToken() error = %v", err)
+	if err == nil {
+		t.Fatalf("GetAccessToken() = (%q, %q, nil); the cookie jar must never be returned to an upstream caller", token, kind)
 	}
-	if kind != "cookie" {
-		t.Errorf("kind = %q, want cookie", kind)
+	if token != "" {
+		t.Errorf("token = %q, want empty", token)
 	}
-	if token != account.CookieJar() {
-		t.Errorf("token = %q, want the cookie jar", token)
+	if strings.Contains(err.Error(), account.CookieJar()) {
+		t.Errorf("the error message leaks the credential: %v", err)
 	}
 
-	delete(account.Credentials, CredentialKeyCookieJar)
-	if _, _, err := svc.GetAccessToken(context.Background(), account); err == nil {
-		t.Error("expected an error when the cookie jar is missing")
+	// The forward path is what actually reads the jar, and it must still see it.
+	if account.CookieJar() == "" {
+		t.Error("CookieJar() is empty; forwardClaudeWebCookie could not authenticate")
 	}
 }

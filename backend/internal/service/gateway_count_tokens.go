@@ -40,6 +40,12 @@ func (s *GatewayService) ForwardCountTokens(ctx context.Context, c *gin.Context,
 		return nil
 	}
 
+	// claude.ai cookie 账号在本地作答，绝不向上游发起请求：cookie jar 不是
+	// Anthropic API key，发出去既泄露凭证又会因 401 被自动禁用。
+	if account != nil && account.IsClaudeCookie() {
+		return s.countTokensLocally(c, parsed)
+	}
+
 	body := parsed.Body.Bytes()
 	replaceBody := func(next []byte) error {
 		if err := parsed.ReplaceBody(next); err != nil {
@@ -241,6 +247,21 @@ func (s *GatewayService) ForwardCountTokens(ctx context.Context, c *gin.Context,
 
 	// 透传成功响应
 	c.Data(resp.StatusCode, "application/json", respBody)
+	return nil
+}
+
+// countTokensLocally answers count_tokens without any upstream call.
+//
+// claude.ai's web API exposes no token-counting endpoint, so the number is an
+// estimate. It is deliberately the same estimate the cookie forward path bills
+// with, so that what a client is told here matches what it is later charged for.
+func (s *GatewayService) countTokensLocally(c *gin.Context, parsed *ParsedRequest) error {
+	prompt, err := BuildClaudeWebPrompt(parsed.Body.Bytes())
+	if err != nil {
+		s.countTokensError(c, http.StatusBadRequest, "invalid_request_error", "Malformed request body")
+		return nil
+	}
+	c.JSON(http.StatusOK, gin.H{"input_tokens": estimateTokensForText(prompt.Transcript())})
 	return nil
 }
 

@@ -2,6 +2,7 @@ package handler
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -63,7 +64,20 @@ func classifyNoAccountError(
 	routingModel string,
 	displayModel string,
 	platform string,
+	selectErr error,
 ) noAccountErrorClassification {
+	// A group allow-list rejection is a configuration decision, not a capacity
+	// shortfall, and it is the one selection failure whose reason the scheduler
+	// does state outright. Re-deriving it here from apiKey.Group would be wrong
+	// whenever Claude Code fallback moved the request to another group, so the
+	// sentinel is trusted instead of guessed.
+	if errors.Is(selectErr, service.ErrModelNotAllowedByGroup) {
+		return noAccountErrorClassification{
+			Status:  http.StatusForbidden,
+			ErrType: "permission_error",
+			Message: fmt.Sprintf("Model %s is not available in this group", displayModel),
+		}
+	}
 	fallback := noAccountErrorClassification{
 		Status:  http.StatusServiceUnavailable,
 		ErrType: "api_error",
@@ -101,12 +115,13 @@ func classifyNoAccountErrorFromGin(
 	routingModel string,
 	displayModel string,
 	platform string,
+	selectErr error,
 ) noAccountErrorClassification {
 	ctx := context.Background()
 	if c != nil && c.Request != nil {
 		ctx = c.Request.Context()
 	}
-	return classifyNoAccountError(ctx, diag, apiKey, routingModel, displayModel, platform)
+	return classifyNoAccountError(ctx, diag, apiKey, routingModel, displayModel, platform, selectErr)
 }
 
 func classifyOpenAICompatibleNoAccountErrorFromGin(
@@ -115,6 +130,7 @@ func classifyOpenAICompatibleNoAccountErrorFromGin(
 	apiKey *service.APIKey,
 	routingModel string,
 	displayModel string,
+	selectErr error,
 ) noAccountErrorClassification {
 	ctx := context.Background()
 	if c != nil && c.Request != nil {
@@ -127,6 +143,7 @@ func classifyOpenAICompatibleNoAccountErrorFromGin(
 		routingModel,
 		displayModel,
 		openAICompatibleRequestPlatform(ctx, apiKey),
+		selectErr,
 	)
 }
 

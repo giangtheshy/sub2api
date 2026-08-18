@@ -419,6 +419,14 @@ var (
 // ErrNoAvailableAccounts 表示没有可用的账号
 var ErrNoAvailableAccounts = errors.New("no available accounts")
 
+// ErrModelNotAllowedByGroup 表示请求的模型不在分组的准入白名单内。
+//
+// 与 ErrNoAvailableAccounts 刻意区分：后者意为"能服务该模型的账号此刻都不可用"，
+// 属于容量问题、重试可能成功；本错误是配置层面的明确拒绝，重试永远不会成功。
+// 两者若共用一个 sentinel，客户端会对着一个不可能变好的 503 一直重试，
+// 运维也会在监控里把它归进容量告警。
+var ErrModelNotAllowedByGroup = errors.New("model is not allowed by this group")
+
 // ErrClaudeCodeOnly 表示分组仅允许 Claude Code 客户端访问
 var ErrClaudeCodeOnly = errors.New("this group only allows Claude Code clients")
 
@@ -1223,15 +1231,16 @@ func (s *GatewayService) GetAccessToken(ctx context.Context, account *Account) (
 	case AccountTypeBedrock:
 		return "", "bedrock", nil // Bedrock 使用 SigV4 签名或 API Key，由 forwardBedrock 处理
 	case AccountTypeCookie:
-		// claude.ai cookie 账号：凭证就是 cookie jar，由 forwardClaudeWebCookie 处理
-		if account.Platform != PlatformAnthropic {
-			return "", "", fmt.Errorf("unsupported cookie account platform: %s", account.Platform)
-		}
-		cookieJar := account.CookieJar()
-		if cookieJar == "" {
-			return "", "", errors.New("cookie_jar not found in credentials")
-		}
-		return cookieJar, "cookie", nil
+		// claude.ai cookie 账号故意在此 fail closed。
+		//
+		// 本函数的每一个调用方都会把返回值放进指向 api.anthropic.com 的
+		// Authorization / x-api-key 头；而 cookie jar 是 claude.ai 的浏览器会话，
+		// 不是 Anthropic API key。一旦返回，凭证就会被发往上游，随之而来的 401
+		// 会触发 handleAuthError → SetError，把一个健康账号永久禁用。
+		//
+		// 真正需要 jar 的 forwardClaudeWebCookie 直接读 account.CookieJar()，
+		// 从不经过这里，因此这里没有任何合法调用方。
+		return "", "", fmt.Errorf("account %d is a claude.ai cookie account and cannot authenticate against the Anthropic API", account.ID)
 	case AccountTypeServiceAccount:
 		if account.Platform != PlatformAnthropic {
 			return "", "", fmt.Errorf("unsupported service account platform: %s", account.Platform)

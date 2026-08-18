@@ -80,3 +80,7 @@ deploy/redis_data/
 .claude/
 issues/
 CLAUDE.md
+
+# Exported browser cookies (live claude.ai sessionKeys)
+*cookies*.txt
+*cookies*.json

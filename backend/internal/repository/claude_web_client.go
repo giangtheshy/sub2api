@@ -35,8 +35,15 @@ func NewClaudeWebClient() service.ClaudeWebClient {
 	}
 }
 
-// streamTimeout is generous: a long completion can stream for minutes.
-const claudeWebStreamTimeout = 10 * time.Minute
+const (
+	// claudeWebStreamTimeout is generous: a long completion can stream for minutes.
+	claudeWebStreamTimeout = 10 * time.Minute
+
+	headerContentType = "Content-Type"
+	headerAccept      = "Accept"
+	mimeJSON          = "application/json"
+	mimeEventStream   = "text/event-stream"
+)
 
 func (c *claudeWebClient) request(ctx context.Context, proxyURL string) (*req.Request, error) {
 	client, err := c.clientFactory(proxyURL)
@@ -57,7 +64,7 @@ func withBrowserHeaders(r *req.Request, cookieJar, convUUID string) *req.Request
 	}
 	return r.
 		SetHeader("Cookie", cookieJar).
-		SetHeader("Accept", "application/json").
+		SetHeader(headerAccept, mimeJSON).
 		SetHeader("Accept-Language", "en-US,en;q=0.9").
 		SetHeader("Cache-Control", "no-cache").
 		SetHeader("Origin", "https://claude.ai").
@@ -138,7 +145,7 @@ func (c *claudeWebClient) CreateConversation(ctx context.Context, cookieJar, org
 	}
 
 	resp, err := withBrowserHeaders(r, cookieJar, "").
-		SetHeader("Content-Type", "application/json").
+		SetHeader(headerContentType, mimeJSON).
 		SetBody(map[string]any{"uuid": convUUID, "name": ""}).
 		SetSuccessResult(&result).
 		Post(fmt.Sprintf("%s/api/organizations/%s/chat_conversations", c.baseURL, orgUUID))
@@ -173,7 +180,7 @@ func (c *claudeWebClient) SetPaprikaMode(ctx context.Context, cookieJar, orgUUID
 	}
 
 	resp, err := withBrowserHeaders(r, cookieJar, convUUID).
-		SetHeader("Content-Type", "application/json").
+		SetHeader(headerContentType, mimeJSON).
 		SetBody(map[string]any{"settings": map[string]any{"paprika_mode": modeValue}}).
 		Put(fmt.Sprintf("%s/api/organizations/%s/chat_conversations/%s", c.baseURL, orgUUID, convUUID))
 	if err != nil {
@@ -215,7 +222,7 @@ func (c *claudeWebClient) UploadFile(ctx context.Context, cookieJar, orgUUID, fi
 	}
 
 	resp, err := withBrowserHeaders(r, cookieJar, "").
-		SetHeader("Content-Type", writer.FormDataContentType()).
+		SetHeader(headerContentType, writer.FormDataContentType()).
 		SetBody(body.Bytes()).
 		SetSuccessResult(&result).
 		Post(fmt.Sprintf("%s/api/%s/upload", c.baseURL, orgUUID))
@@ -238,8 +245,8 @@ func (c *claudeWebClient) SendMessage(ctx context.Context, cookieJar, orgUUID, c
 	}
 
 	resp, err := withBrowserHeaders(r, cookieJar, convUUID).
-		SetHeader("Accept", "text/event-stream").
-		SetHeader("Content-Type", "application/json").
+		SetHeader(headerAccept, mimeEventStream).
+		SetHeader(headerContentType, mimeJSON).
 		SetBody(payload).
 		DisableAutoReadResponse().
 		Post(fmt.Sprintf("%s/api/organizations/%s/chat_conversations/%s/completion", c.baseURL, orgUUID, convUUID))
@@ -270,7 +277,7 @@ func (c *claudeWebClient) SendToolResult(ctx context.Context, cookieJar, orgUUID
 	}
 
 	resp, err := withBrowserHeaders(r, cookieJar, convUUID).
-		SetHeader("Content-Type", "application/json").
+		SetHeader(headerContentType, mimeJSON).
 		SetBody(payload).
 		Post(fmt.Sprintf("%s/api/organizations/%s/chat_conversations/%s/tool_result", c.baseURL, orgUUID, convUUID))
 	if err != nil {

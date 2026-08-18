@@ -317,7 +317,7 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 			selection, err := h.gatewayService.SelectAccountWithLoadAwareness(c.Request.Context(), apiKey.GroupID, sessionKey, reqModel, fs.FailedAccountIDs, "", int64(0)) // Gemini 不使用会话限制
 			if err != nil {
 				if len(fs.FailedAccountIDs) == 0 {
-					cls := classifyNoAccountErrorFromGin(c, h.gatewayService, apiKey, reqModel, reqModel, service.PlatformGemini)
+					cls := classifyNoAccountErrorFromGin(c, h.gatewayService, apiKey, reqModel, reqModel, service.PlatformGemini, err)
 					if !cls.ModelNotFound {
 						markOpsRoutingCapacityLimitedIfNoAvailable(c, err)
 					}
@@ -629,7 +629,7 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 			selection, err := h.gatewayService.SelectAccountWithLoadAwareness(c.Request.Context(), currentAPIKey.GroupID, sessionKey, reqModel, fs.FailedAccountIDs, parsedReq.MetadataUserID, subject.UserID)
 			if err != nil {
 				if len(fs.FailedAccountIDs) == 0 {
-					cls := classifyNoAccountErrorFromGin(c, h.gatewayService, currentAPIKey, reqModel, reqModel, platform)
+					cls := classifyNoAccountErrorFromGin(c, h.gatewayService, currentAPIKey, reqModel, reqModel, platform, err)
 					if !cls.ModelNotFound {
 						markOpsRoutingCapacityLimitedIfNoAvailable(c, err)
 					}
@@ -1084,6 +1084,23 @@ func (h *GatewayHandler) Models(c *gin.Context) {
 		platform = forcedPlatform
 	}
 
+	// 分组模型白名单：目录必须与调度门一致。列出一个随后会被 403 拒绝的模型，
+	// 客户端无从判断问题出在哪。此分支单独处理，避免在下方每个出口逐个补漏。
+	if group := apiKeyGroupWithAllowList(apiKey); group != nil {
+		source := h.gatewayService.GetAvailableModels(c.Request.Context(), groupID, platform)
+		if platform == service.PlatformComposite {
+			source = h.compositeAvailableModels(c.Request.Context(), groupID)
+		}
+		if len(source) == 0 {
+			source = defaultModelIDsForPlatform(platform)
+		}
+		if group.CustomModelsListEnabled() {
+			source = filterModelsByCustomList(source, defaultModelIDsForPlatform(platform), group.ModelsListConfig.Models)
+		}
+		writeCustomModelsList(c, platform, filterModelsByGroupAllowList(source, group))
+		return
+	}
+
 	if platform == service.PlatformComposite {
 		availableModels := h.compositeAvailableModels(c.Request.Context(), groupID)
 		if apiKey != nil && apiKey.Group != nil && apiKey.Group.CustomModelsListEnabled() {
@@ -1288,6 +1305,27 @@ func customModelsListSource(platform string, availableModels, fallbackModels []s
 		return mergeModelIDs(availableModels, fallbackModels)
 	}
 	return availableModels
+}
+
+// filterModelsByGroupAllowList drops models the group's allow-list would reject
+// at dispatch. Listing a model and then answering 403 for it is a contradiction
+// the client cannot resolve, so the catalogue has to agree with the gate.
+//
+// An empty allow-list means no restriction, matching service.Group.AllowsModel;
+// a list that excludes everything yields an empty catalogue rather than falling
+// back to the unfiltered one, because silently serving what the operator
+// excluded is the worst available reading of an allow-list.
+func filterModelsByGroupAllowList(modelIDs []string, group *service.Group) []string {
+	if group == nil || len(group.AllowedModels) == 0 {
+		return modelIDs
+	}
+	filtered := make([]string, 0, len(modelIDs))
+	for _, model := range modelIDs {
+		if group.AllowsModel(model) {
+			filtered = append(filtered, model)
+		}
+	}
+	return filtered
 }
 
 func filterModelsByCustomList(availableModels, fallbackModels, selectedModels []string) []string {
@@ -2058,7 +2096,7 @@ func (h *GatewayHandler) CountTokens(c *gin.Context) {
 	account, err := h.gatewayService.SelectAccountForModel(c.Request.Context(), apiKey.GroupID, sessionHash, parsedReq.Model)
 	if err != nil {
 		reqLog.Warn("gateway.count_tokens_select_account_failed", zap.Error(err))
-		cls := classifyNoAccountErrorFromGin(c, h.gatewayService, apiKey, parsedReq.Model, parsedReq.Model, service.PlatformAnthropic)
+		cls := classifyNoAccountErrorFromGin(c, h.gatewayService, apiKey, parsedReq.Model, parsedReq.Model, service.PlatformAnthropic, err)
 		if !cls.ModelNotFound {
 			markOpsRoutingCapacityLimitedIfNoAvailable(c, err)
 		}
@@ -2462,4 +2500,14 @@ func (h *GatewayHandler) getUserMsgQueueMode(account *service.Account, parsed *s
 		mode = h.cfg.Gateway.UserMessageQueue.GetEffectiveMode()
 	}
 	return mode
+}
+
+// apiKeyGroupWithAllowList returns the request's group only when it actually
+// restricts models, so the ordinary listing path stays byte-for-byte unchanged
+// for every group that has never configured one.
+func apiKeyGroupWithAllowList(apiKey *service.APIKey) *service.Group {
+	if apiKey == nil || apiKey.Group == nil || len(apiKey.Group.AllowedModels) == 0 {
+		return nil
+	}
+	return apiKey.Group
 }

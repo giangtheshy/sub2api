@@ -32,9 +32,14 @@ type ClaudeCookieAccountInput struct {
 }
 
 // ClaudeCookieAccountInfo is what the panel needs to persist the account.
+//
+// CookieJar and SessionKey are deliberately not serialized: the credential
+// reaches the panel once, through Credentials(), which is what the create
+// request posts back. Restating it in this struct would put a live claude.ai
+// session into devtools history and any reverse-proxy response log for no gain.
 type ClaudeCookieAccountInfo struct {
-	CookieJar    string   `json:"cookie_jar"`
-	SessionKey   string   `json:"session_key"`
+	CookieJar    string   `json:"-"`
+	SessionKey   string   `json:"-"`
 	OrgUUID      string   `json:"org_uuid"`
 	OrgName      string   `json:"org_name"`
 	Plan         string   `json:"claude_plan"`

@@ -250,6 +250,35 @@ export default {
           normal: '配额正常'
         },
       },
+      claudeCli: {
+        menuLabel: '导出给 Claude CLI',
+        title: '在 Claude CLI 中使用此账号',
+        intro: '把这份文件放到运行 Claude Code 的机器上，即可直接使用「{name}」，无需再次登录 Anthropic。',
+        fileLabel: '文件内容',
+        pathLabel: '保存位置',
+        pathHint: '文件名以点开头：.credentials.json —— 名为 credentials.json 的文件会被静默忽略。下载后请重命名。',
+        lifetime: 'Access token 约还有 {hours} 小时 {minutes} 分钟有效。',
+        includeRefreshToken: '同时包含 refresh token',
+        includeRefreshTokenHint: '保持关闭即可把账号留在这里。没有 refresh token，CLI 无法续期，也就无法把该账号从 sub2api 手里夺走——过期后重新导出一次即可。',
+        copy: '复制',
+        copied: '已复制到剪贴板',
+        copyFailed: '复制失败，请手动选中文本复制。',
+        download: '下载文件',
+        loadFailed: '无法导出该账号的凭证。',
+        warnings: {
+          refresh_token_rotation: 'Anthropic 会轮换 refresh token，因此同一份凭证同时只能有一个持有者。一旦 Claude CLI 刷新，这里保存的副本即失效，该账号将持续报错直至重新授权；反之亦然。',
+          refresh_token_withheld: '文件中只包含 access token，因此 Claude CLI 无法续期，也无法把该账号从 sub2api 手中轮换走。过期后 CLI 会要求登录——此时回到这里重新导出即可，届时 sub2api 已完成刷新。',
+          no_refresh_token: '该账号本身就没有 refresh token，sub2api 同样无法刷新它。之后再导出也只会得到又一个过期 token——请先重新授权该账号。',
+          access_token_expired: 'Access token 已过期，CLI 首次使用即会刷新，从而立刻使该账号失效。若仍要在此继续使用该账号，请先在这里刷新它。',
+          inferred_scopes: '该账号未保存 scope，已按其类型的默认值填充。若 CLI 提示权限不足，请重新授权该账号。',
+          limited_scopes: '该凭证缺少 user:profile，Claude CLI 中依赖该权限的功能将不可用。'
+        }
+      },
+      excludedModels: {
+        title: '排除模型',
+        hint: '每行一个，支持末尾通配符（claude-opus-*）。其余模型保持可用，因此日后新发布的模型无需再改这里。排除优先于白名单与透传。',
+        placeholder: 'claude-opus-*'
+      },
       clearRateLimit: '清除速率限制',
       resetQuota: '重置配额',
       quotaLimit: '配额限制',

@@ -2,6 +2,7 @@ package service
 
 import (
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"strings"
 
@@ -69,6 +70,25 @@ type ClaudeWebPrompt struct {
 func BuildClaudeWebPrompt(body []byte) (*ClaudeWebPrompt, error) {
 	root := gjson.ParseBytes(body)
 
+	messages := root.Get("messages")
+	if !messages.IsArray() {
+		return nil, fmt.Errorf("request has no messages array")
+	}
+
+	out := newClaudeWebPrompt(root)
+	segments, lastRole, hasBody := out.collectTurns(messages)
+	out.System = flattenSystemPrompt(root.Get("system"))
+	out.splitTurns(segments, lastRole)
+
+	if !hasBody && len(out.Images) == 0 {
+		return nil, fmt.Errorf("request has no usable message content")
+	}
+	return out, nil
+}
+
+// newClaudeWebPrompt reads the request-level settings (model, budget, thinking,
+// tools) that do not depend on the message list.
+func newClaudeWebPrompt(root gjson.Result) *ClaudeWebPrompt {
 	out := &ClaudeWebPrompt{
 		Model:     root.Get("model").String(),
 		MaxTokens: int(root.Get("max_tokens").Int()),
@@ -77,7 +97,7 @@ func BuildClaudeWebPrompt(body []byte) (*ClaudeWebPrompt, error) {
 		out.MaxTokens = defaultClaudeWebMaxTokens
 	}
 
-	switch thinking := root.Get("thinking.type").String(); thinking {
+	switch root.Get("thinking.type").String() {
 	case "enabled", "adaptive":
 		out.ThinkingEnabled = true
 	}
@@ -87,49 +107,30 @@ func BuildClaudeWebPrompt(body []byte) (*ClaudeWebPrompt, error) {
 			out.Tools = append(out.Tools, tool.Value())
 		}
 	}
+	return out
+}
 
-	messages := root.Get("messages")
-	if !messages.IsArray() {
-		return nil, fmt.Errorf("request has no messages array")
-	}
-
-	// Turns are accumulated as segments so that consecutive messages from the
-	// same role merge under one role prefix while still being newline separated.
-	var segments []string
-	currentRole := ""
-	// hasBody tracks whether any message actually contributed content; role
-	// prefixes alone are not a request worth forwarding.
-	hasBody := false
-
+// collectTurns renders the message list into role-prefixed segments, merging
+// consecutive messages from the same role into one turn. It also collects any
+// inline images as a side effect.
+//
+// It returns the segments, the role of the final turn, and whether any message
+// contributed content (a bare role prefix is not a request worth forwarding).
+func (p *ClaudeWebPrompt) collectTurns(messages gjson.Result) (segments []string, lastRole string, hasBody bool) {
 	messages.ForEach(func(_, msg gjson.Result) bool {
 		role := msg.Get("role").String()
 		if role != "assistant" {
 			role = "user"
 		}
 
-		var rendered strings.Builder
-		content := msg.Get("content")
-		if content.Type == gjson.String {
-			rendered.WriteString(content.String())
-			rendered.WriteString("\n")
-		} else if content.IsArray() {
-			content.ForEach(func(_, block gjson.Result) bool {
-				out.writeBlock(&rendered, block)
-				return true
-			})
-		}
-		text := strings.TrimRight(rendered.String(), "\n")
+		text := p.renderMessage(msg)
 		if strings.TrimSpace(text) != "" {
 			hasBody = true
 		}
 
-		if role != currentRole {
-			prefix := claudeWebHumanPrefix
-			if role == "assistant" {
-				prefix = claudeWebAssistantPrefix
-			}
-			segments = append(segments, prefix+text)
-			currentRole = role
+		if role != lastRole {
+			segments = append(segments, claudeWebRolePrefix(role)+text)
+			lastRole = role
 			return true
 		}
 
@@ -144,22 +145,45 @@ func BuildClaudeWebPrompt(body []byte) (*ClaudeWebPrompt, error) {
 		}
 		return true
 	})
+	return segments, lastRole, hasBody
+}
 
-	out.System = flattenSystemPrompt(root.Get("system"))
+// renderMessage renders one message's content into transcript text.
+func (p *ClaudeWebPrompt) renderMessage(msg gjson.Result) string {
+	var rendered strings.Builder
 
-	// The final turn is the live request and must travel in the prompt; earlier
-	// turns are context and travel as an attachment.
-	if n := len(segments); n > 0 && currentRole == "user" {
-		out.Latest = strings.TrimPrefix(segments[n-1], claudeWebHumanPrefix)
-		out.History = strings.Join(segments[:n-1], "\n\n")
-	} else {
-		out.History = strings.Join(segments, "\n\n")
+	content := msg.Get("content")
+	switch {
+	case content.Type == gjson.String:
+		rendered.WriteString(content.String())
+		rendered.WriteString("\n")
+	case content.IsArray():
+		content.ForEach(func(_, block gjson.Result) bool {
+			p.writeBlock(&rendered, block)
+			return true
+		})
 	}
 
-	if !hasBody && len(out.Images) == 0 {
-		return nil, fmt.Errorf("request has no usable message content")
+	return strings.TrimRight(rendered.String(), "\n")
+}
+
+// splitTurns assigns the final user turn to the prompt and the rest to the
+// attached history. An assistant-prefill request has no live user turn, so
+// everything becomes history.
+func (p *ClaudeWebPrompt) splitTurns(segments []string, lastRole string) {
+	if n := len(segments); n > 0 && lastRole == "user" {
+		p.Latest = strings.TrimPrefix(segments[n-1], claudeWebHumanPrefix)
+		p.History = strings.Join(segments[:n-1], "\n\n")
+		return
 	}
-	return out, nil
+	p.History = strings.Join(segments, "\n\n")
+}
+
+func claudeWebRolePrefix(role string) string {
+	if role == "assistant" {
+		return claudeWebAssistantPrefix
+	}
+	return claudeWebHumanPrefix
 }
 
 // writeBlock renders one content block into the transcript.
@@ -324,12 +348,23 @@ func (p *ClaudeWebPrompt) PromptText() string {
 	}
 }
 
-// Transcript is the full conversation as text, used for token estimation.
+// Transcript is everything billed as input, rendered as text for token
+// estimation.
+//
+// It must mirror what CompletionPayload actually sends upstream, not just the
+// conversation: the tool schemas go to claude.ai too, and a Claude Code client
+// ships 10-15K tokens of them on every request. Leaving them out billed them as
+// free.
 func (p *ClaudeWebPrompt) Transcript() string {
-	parts := make([]string, 0, 3)
+	parts := make([]string, 0, 4)
 	for _, part := range []string{p.System, p.History, p.Latest} {
 		if part != "" {
 			parts = append(parts, part)
+		}
+	}
+	if len(p.Tools) > 0 {
+		if encoded, err := json.Marshal(p.Tools); err == nil {
+			parts = append(parts, string(encoded))
 		}
 	}
 	return strings.Join(parts, "\n\n")

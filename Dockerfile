@@ -8,7 +8,10 @@
 # =============================================================================
 
 ARG NODE_IMAGE=node:24-alpine
-ARG GOLANG_IMAGE=golang:1.26.5-alpine
+# Must be >= the go directive in backend/go.mod: the official Go images set
+# GOTOOLCHAIN=local, so an older image refuses to build rather than fetching a
+# newer toolchain.
+ARG GOLANG_IMAGE=golang:1.26.6-alpine
 ARG ALPINE_IMAGE=alpine:3.21
 ARG POSTGRES_IMAGE=postgres:18-alpine
 ARG GOPROXY=https://goproxy.cn,direct

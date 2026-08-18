@@ -68,6 +68,12 @@ func (s *GatewayService) SelectAccountForModelWithExclusions(ctx context.Context
 
 	// Claude Code 限制可能已将 groupID 解析为 fallback group，
 	// 渠道限制预检查必须使用解析后的分组。
+	// 分组模型白名单：与渠道定价限制同一位置，同样必须使用解析后的分组。
+	// 白名单是配置层拒绝而非容量不足，因此返回独立 sentinel 而不是 ErrNoAvailableAccounts。
+	if err := s.checkGroupModelAllowance(ctx, groupID, requestedModel); err != nil {
+		return nil, err
+	}
+
 	if s.checkChannelPricingRestriction(ctx, groupID, requestedModel) {
 		slog.Warn("channel pricing restriction blocked request",
 			"group_id", derefGroupID(groupID),
@@ -121,6 +127,12 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 
 	// Claude Code 限制可能已将 groupID 解析为 fallback group，
 	// 渠道限制预检查必须使用解析后的分组。
+	// 分组模型白名单：与渠道定价限制同一位置，同样必须使用解析后的分组。
+	// 白名单是配置层拒绝而非容量不足，因此返回独立 sentinel 而不是 ErrNoAvailableAccounts。
+	if err := s.checkGroupModelAllowance(ctx, groupID, requestedModel); err != nil {
+		return nil, err
+	}
+
 	if s.checkChannelPricingRestriction(ctx, groupID, requestedModel) {
 		slog.Warn("channel pricing restriction blocked request",
 			"group_id", derefGroupID(groupID),

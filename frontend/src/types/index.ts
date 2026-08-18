@@ -631,6 +631,8 @@ export interface AdminGroup extends Group {
   default_mapped_model?: string
   messages_dispatch_model_config?: OpenAIMessagesDispatchModelConfig
   models_list_config?: ModelsListConfig
+  /** 模型准入白名单：空=不限制，支持末尾通配符。调度前强制生效（与 models_list_config 仅影响展示不同）。 */
+  allowed_models?: string[]
 
   // 分组排序
   sort_order: number
@@ -804,6 +806,8 @@ export interface CreateGroupRequest {
   mcp_xml_inject?: boolean
   supported_model_scopes?: string[]
   models_list_config?: ModelsListConfig
+  /** 模型准入白名单：空=不限制，支持末尾通配符。调度前强制生效（与 models_list_config 仅影响展示不同）。 */
+  allowed_models?: string[]
   allow_messages_dispatch?: boolean
   allow_live?: boolean
   default_mapped_model?: string
@@ -866,6 +870,8 @@ export interface UpdateGroupRequest {
   mcp_xml_inject?: boolean
   supported_model_scopes?: string[]
   models_list_config?: ModelsListConfig
+  /** 模型准入白名单：空=不限制，支持末尾通配符。调度前强制生效（与 models_list_config 仅影响展示不同）。 */
+  allowed_models?: string[]
   allow_messages_dispatch?: boolean
   allow_live?: boolean
   default_mapped_model?: string

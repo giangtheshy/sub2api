@@ -377,6 +377,9 @@ func registerAccountRoutes(admin *gin.RouterGroup, h *handler.Handlers, stepUpAu
 		accounts.POST("/:id/set-privacy", h.Admin.Account.SetPrivacy)
 		accounts.POST("/:id/refresh-tier", h.Admin.Account.RefreshTier)
 		accounts.GET("/:id/stats", h.Admin.Account.GetStats)
+		// 导出 Claude CLI 凭证文件：返回的是账号的 OAuth token 原文（这正是该接口的用途，
+		// 无法脱敏），因此在 auditSensitiveReads 中登记为敏感读取并逐次留痕。
+		accounts.GET("/:id/claude-cli-credentials", h.Admin.Account.ExportClaudeCLICredentials)
 		accounts.POST("/:id/clear-error", h.Admin.Account.ClearError)
 		accounts.POST("/:id/revert-proxy-fallback", h.Admin.Account.RevertProxyFallback)
 		accounts.GET("/:id/usage", h.Admin.Account.GetUsage)
@@ -394,7 +397,9 @@ func registerAccountRoutes(admin *gin.RouterGroup, h *handler.Handlers, stepUpAu
 		accounts.POST("/batch", h.Admin.Account.BatchCreate)
 		// 账号导出泄露上游凭证原文——要求 step-up 2FA
 		accounts.GET("/data", gin.HandlerFunc(stepUpAuth), h.Admin.Account.ExportData)
-		accounts.POST("/data", h.Admin.Account.ImportData)
+		// 导入会写入攻击者指定的凭证与 base_url，危害不低于导出；
+		// 若只对读设门、对写不设门，那是一道装反了的门。
+		accounts.POST("/data", gin.HandlerFunc(stepUpAuth), h.Admin.Account.ImportData)
 		accounts.POST("/batch-update-credentials", h.Admin.Account.BatchUpdateCredentials)
 		accounts.POST("/batch-refresh-tier", h.Admin.Account.BatchRefreshTier)
 		accounts.POST("/bulk-update", h.Admin.Account.BulkUpdate)

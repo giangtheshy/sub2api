@@ -112,6 +112,8 @@ const (
 	FieldMcpXMLInject = "mcp_xml_inject"
 	// FieldSupportedModelScopes holds the string denoting the supported_model_scopes field in the database.
 	FieldSupportedModelScopes = "supported_model_scopes"
+	// FieldAllowedModels holds the string denoting the allowed_models field in the database.
+	FieldAllowedModels = "allowed_models"
 	// FieldSortOrder holds the string denoting the sort_order field in the database.
 	FieldSortOrder = "sort_order"
 	// FieldAllowMessagesDispatch holds the string denoting the allow_messages_dispatch field in the database.
@@ -263,6 +265,7 @@ var Columns = []string{
 	FieldModelRoutingEnabled,
 	FieldMcpXMLInject,
 	FieldSupportedModelScopes,
+	FieldAllowedModels,
 	FieldSortOrder,
 	FieldAllowMessagesDispatch,
 	FieldAllowLive,
@@ -380,6 +383,8 @@ var (
 	DefaultMcpXMLInject bool
 	// DefaultSupportedModelScopes holds the default value on creation for the "supported_model_scopes" field.
 	DefaultSupportedModelScopes []string
+	// DefaultAllowedModels holds the default value on creation for the "allowed_models" field.
+	DefaultAllowedModels []string
 	// DefaultSortOrder holds the default value on creation for the "sort_order" field.
 	DefaultSortOrder int
 	// DefaultAllowMessagesDispatch holds the default value on creation for the "allow_messages_dispatch" field.

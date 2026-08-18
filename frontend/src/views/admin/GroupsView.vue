@@ -765,6 +765,24 @@
         </div>
 
         <div class="border-t pt-4">
+          <label class="text-sm font-medium text-gray-700 dark:text-gray-300">
+            {{ t("admin.groups.allowedModels.title") }}
+          </label>
+          <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+            {{ t("admin.groups.allowedModels.hint") }}
+          </p>
+          <textarea
+            v-model="createAllowedModelsText"
+            rows="4"
+            class="input mt-2 font-mono text-xs"
+            :placeholder="t('admin.groups.allowedModels.placeholder')"
+          ></textarea>
+          <p class="mt-1 text-xs text-amber-600 dark:text-amber-400">
+            {{ t("admin.groups.allowedModels.warning") }}
+          </p>
+        </div>
+
+        <div class="border-t pt-4">
           <div class="mb-3 flex items-center justify-between gap-3">
             <div>
               <label class="text-sm font-medium text-gray-700 dark:text-gray-300">
@@ -2488,6 +2506,24 @@
               />
             </div>
           </div>
+        </div>
+
+        <div class="border-t pt-4">
+          <label class="text-sm font-medium text-gray-700 dark:text-gray-300">
+            {{ t("admin.groups.allowedModels.title") }}
+          </label>
+          <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+            {{ t("admin.groups.allowedModels.hint") }}
+          </p>
+          <textarea
+            v-model="editAllowedModelsText"
+            rows="4"
+            class="input mt-2 font-mono text-xs"
+            :placeholder="t('admin.groups.allowedModels.placeholder')"
+          ></textarea>
+          <p class="mt-1 text-xs text-amber-600 dark:text-amber-400">
+            {{ t("admin.groups.allowedModels.warning") }}
+          </p>
         </div>
 
         <div class="border-t pt-4">
@@ -5285,6 +5321,28 @@ const removeEditRoutingRule = (rule: ModelRoutingRule) => {
   editModelRoutingRules.value.splice(index, 1);
 };
 
+// 分组模型白名单以纯文本编辑（每行一个，支持末尾通配符），因为它要能表达
+// 目录里还不存在的模型——新模型发布当天就该能预先放行，而候选列表做不到这点。
+const createAllowedModelsText = ref("");
+const editAllowedModelsText = ref("");
+
+const parseAllowedModelsText = (text: string): string[] => {
+  const seen = new Set<string>();
+  const models: string[] = [];
+  for (const line of text.split("\n")) {
+    const model = line.trim();
+    if (!model) continue;
+    const key = model.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    models.push(model);
+  }
+  return models;
+};
+
+const formatAllowedModelsText = (models?: string[] | null): string =>
+  (models ?? []).join("\n");
+
 const resetModelsListState = (
   state: typeof createModelsListState,
   config?: Parameters<typeof createInitialModelsListState>[0],
@@ -5891,6 +5949,7 @@ const closeCreateModal = () => {
   createForm.reasoning_effort_mappings = [];
   createReasoningEffortPolicyRef.value?.resetValidation();
   resetModelsListState(createModelsListState);
+  createAllowedModelsText.value = "";
   createModelRoutingRules.value = [];
 };
 
@@ -5983,6 +6042,7 @@ const handleCreateGroup = async () => {
         createModelRoutingRules.value,
       ),
       models_list_config: buildModelsListConfig(createModelsListState),
+      allowed_models: parseAllowedModelsText(createAllowedModelsText.value),
       supported_model_scopes: normalizeSupportedModelScopesForPlatform(
         createForm.platform,
         createForm.supported_model_scopes,
@@ -6163,6 +6223,7 @@ const handleEdit = async (group: AdminGroup) => {
     group.platform,
   );
   resetModelsListState(editModelsListState, group.models_list_config);
+  editAllowedModelsText.value = formatAllowedModelsText(group.allowed_models);
   // 加载模型路由规则（异步加载账号名称）
   editModelRoutingRules.value = await convertApiFormatToRoutingRules(
     group.model_routing,
@@ -6206,6 +6267,7 @@ const closeEditModal = () => {
   resetMessagesDispatchFormState(editForm);
   editForm.allow_live = false;
   resetModelsListState(editModelsListState);
+  editAllowedModelsText.value = "";
 };
 
 const handleUpdateGroup = async () => {
@@ -6256,6 +6318,7 @@ const handleUpdateGroup = async () => {
         editModelRoutingRules.value,
       ),
       models_list_config: buildModelsListConfig(editModelsListState),
+      allowed_models: parseAllowedModelsText(editAllowedModelsText.value),
       supported_model_scopes: normalizeSupportedModelScopesForPlatform(
         editForm.platform,
         editForm.supported_model_scopes,
@@ -6663,6 +6726,7 @@ watch(
     }
     resetDisabledBatchImagePricing(createForm);
     resetModelsListState(createModelsListState);
+  createAllowedModelsText.value = "";
     loadModelsListCandidates("create", 0, newVal);
   },
 );

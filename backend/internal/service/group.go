@@ -90,6 +90,14 @@ type Group struct {
 	// MCP XML 协议注入开关（仅 antigravity 平台使用）
 	MCPXMLInject bool
 
+	// AllowedModels restricts which models this group may serve. Empty means no
+	// restriction — every pre-existing group starts empty, so the opposite
+	// reading would take a deployment offline on upgrade. Entries match exactly
+	// or as a trailing wildcard ("claude-sonnet-*"). Unlike ModelsListConfig,
+	// which only dresses up GET /v1/models, this one is enforced before
+	// scheduling and rejects the request.
+	AllowedModels []string
+
 	// 支持的模型系列（仅 antigravity 平台使用）
 	// 可选值: claude, gemini_text, gemini_image
 	SupportedModelScopes []string

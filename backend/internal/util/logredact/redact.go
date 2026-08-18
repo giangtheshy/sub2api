@@ -20,6 +20,17 @@ var defaultSensitiveKeys = map[string]struct{}{
 	"id_token":           {},
 	"client_secret":      {},
 	"password":           {},
+	// claude.ai cookie 账号凭证。这份清单与 service.SensitiveCredentialKeys 相互独立，
+	// 它守的是幂等记录与日志正文，因此必须单独同步。
+	"cookie_jar":  {},
+	"session_key": {},
+	"cookie":      {},
+	// Claude CLI 的 .credentials.json 用 camelCase，那份文件的拼写由外部程序决定、
+	// 不归我们选。normalizeKey 只做小写化，因此 "accessToken" 会归一成 "accesstoken"
+	// 而与上面的 snake_case 全部错过——必须把同一个密钥的两种拼法都登记。
+	"accesstoken":  {},
+	"refreshtoken": {},
+	"idtoken":      {},
 }
 
 var defaultSensitiveKeyList = []string{
@@ -31,6 +42,14 @@ var defaultSensitiveKeyList = []string{
 	"id_token",
 	"client_secret",
 	"password",
+	// 长键在前：正则交替按先后匹配，"cookie" 排在 "cookie_jar" 之前会先吃掉前缀。
+	"cookie_jar",
+	"session_key",
+	"cookie",
+	// camelCase 变体（Claude CLI 凭证文件）；正则带 (?i)，故只需登记小写形式。
+	"accesstoken",
+	"refreshtoken",
+	"idtoken",
 }
 
 type textRedactPatterns struct {

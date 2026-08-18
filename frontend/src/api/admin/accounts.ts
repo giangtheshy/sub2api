@@ -365,6 +365,57 @@ export async function resetAccountQuota(id: number): Promise<Account> {
 }
 
 /**
+ * The claudeAiOauth object inside Claude Code's `.credentials.json`.
+ * camelCase because that file belongs to another program — its spelling is the
+ * contract, not our style choice.
+ */
+export interface ClaudeCliOAuth {
+  accessToken: string
+  refreshToken?: string
+  expiresAt?: number
+  scopes: string[]
+  subscriptionType?: string
+}
+
+export interface ClaudeCliCredentialsFile {
+  claudeAiOauth: ClaudeCliOAuth
+}
+
+export interface ClaudeCliCredentialsExport {
+  credentials: ClaudeCliCredentialsFile
+  file_name: string
+  expires_at_ms?: number
+  expires_in_seconds?: number
+  /** Warning codes (see backend claude_cli_credentials.go); translated in the UI. */
+  warnings?: string[]
+}
+
+/**
+ * Export an Anthropic OAuth account as the credentials file Claude Code reads,
+ * so a subscription already onboarded here can be used from a local CLI without
+ * logging in to Anthropic again.
+ *
+ * The response contains a live OAuth token in the clear — never log it, and
+ * never persist it anywhere but the user's own machine.
+ *
+ * @param id - Account ID
+ * @param includeRefreshToken - Off by default. When off, the file carries an
+ *   access token only, so the CLI cannot refresh and therefore cannot rotate
+ *   the credential away from sub2api. Turning it on lets the CLI outlive the
+ *   access token, at the cost of breaking this account once it refreshes.
+ */
+export async function exportClaudeCliCredentials(
+  id: number,
+  includeRefreshToken = false
+): Promise<ClaudeCliCredentialsExport> {
+  const { data } = await apiClient.get<ClaudeCliCredentialsExport>(
+    `/admin/accounts/${id}/claude-cli-credentials`,
+    { params: { include_refresh_token: includeRefreshToken } }
+  )
+  return data
+}
+
+/**
  * Get temporary unschedulable status
  * @param id - Account ID
  * @returns Status with detail state if active
@@ -1078,7 +1129,8 @@ export const accountsAPI = {
   saveOllamaCloudUsageSession,
   deleteOllamaCloudUsageSession,
   setOllamaCloudUsageAutoRefresh,
-  refreshOllamaCloudUsage
+  refreshOllamaCloudUsage,
+  exportClaudeCliCredentials
 }
 
 export default accountsAPI

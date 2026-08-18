@@ -801,6 +801,14 @@ func resolveRequestedModelInMapping(mapping map[string]string, requestedModel st
 // 请求卡死在该账号上、无法 failover 到真正支持该模型的 API Key 账号（#3662）。
 // 未知/自定义别名仍保持允许（兼容渠道级映射），见 isOpenAIOAuthServableModel。
 func (a *Account) IsModelSupported(requestedModel string) bool {
+	// excluded_models 是一个明确的减法操作，代表操作者"不允许这个模型"的意图。
+	// 它必须在任何通行证之前运行，否则 passthrough、空 mapping、空 mapping 的
+	// OAuth 特殊路径都会抢先给出 true，使得 exclusion 看起来在面板里生效了但
+	// 实际上什么都不做——而沉默地覆盖操作者的显式指令是最糟糕的读法。
+	if a.isExcludedModel(requestedModel) {
+		return false
+	}
+
 	// 透传模式仅替换认证、模型语义完全交由上游决定，因此放行所有模型。
 	// 该短路必须在 model_mapping 判定之前：账号从"白名单模式"切换到透传后，
 	// credentials 里常残留旧的非空 model_mapping，若不在此放行，透传账号会被
@@ -846,6 +854,48 @@ func (a *Account) ResolveMappedModel(requestedModel string) (mappedModel string,
 		}
 	}
 	return requestedModel, false
+}
+
+// isExcludedModel returns whether credentials.excluded_models matches the
+// requested model. JSON credentials decode arrays as []any while tests and
+// programmatic callers commonly provide []string, so both shapes are accepted.
+// Invalid values and blank entries are ignored: an operator typo must not turn
+// into a hidden match-all rule.
+func (a *Account) isExcludedModel(requestedModel string) bool {
+	if a == nil || a.Credentials == nil {
+		return false
+	}
+
+	raw, ok := a.Credentials["excluded_models"]
+	if !ok || raw == nil {
+		return false
+	}
+
+	model := strings.ToLower(strings.TrimSpace(requestedModel))
+	if model == "" {
+		return false
+	}
+
+	matches := func(pattern string) bool {
+		pattern = strings.ToLower(strings.TrimSpace(pattern))
+		return pattern != "" && (pattern == model || matchWildcard(pattern, model))
+	}
+
+	switch models := raw.(type) {
+	case []string:
+		for _, pattern := range models {
+			if matches(pattern) {
+				return true
+			}
+		}
+	case []any:
+		for _, value := range models {
+			if pattern, ok := value.(string); ok && matches(pattern) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // GetOpenAICompactMode returns the compact routing mode for an OpenAI account.
