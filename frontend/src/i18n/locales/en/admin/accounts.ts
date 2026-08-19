@@ -986,6 +986,16 @@ export default {
           'Keep the cookie and drive claude.ai directly, the way the browser does. Works even when the session is too old for OAuth. Token counts are estimated rather than metered.',
         cookieFileTooLarge: 'That file is too large to be a cookie export (max 512 KB).',
         cookieFileReadFailed: 'Could not read that file. Paste its contents instead.',
+        importCredentials: 'Import OAuth credentials',
+        importCredentialsDesc:
+          'Paste or upload a Claude Code credential file (the JSON containing "claudeAiOauth" with accessToken and refreshToken). It is imported as-is and creates a normal OAuth account — nothing is minted and no authorization step runs.',
+        importCredentialsInputLabel: 'claudeAiOauth JSON',
+        importCredentialsUpload: 'Choose file',
+        importCredentialsPlaceholder:
+          'Paste the claudeAiOauth JSON here (the object containing accessToken and refreshToken)…',
+        importCredentialsHint:
+          'Accepts the wrapped claudeAiOauth file or a bare object with the same fields. One file = one account.',
+        importCredentialsSubmit: 'Import & create account',
         cookieSessionStale:
           'The cookie is valid, but your claude.ai session is too old for Anthropic to grant OAuth access. Sign out and sign back in to claude.ai, export the cookies again right away, then retry.',
         cookieInvalid:

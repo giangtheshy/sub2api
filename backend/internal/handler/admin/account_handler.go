@@ -2327,6 +2327,38 @@ func (h *OAuthHandler) ValidateCookieAccount(c *gin.Context) {
 	})
 }
 
+// ImportOAuthCredentialsRequest carries a pasted Claude Code credential file.
+type ImportOAuthCredentialsRequest struct {
+	// Credentials is the raw blob: {"claudeAiOauth":{...}} as written by Claude
+	// Code, or a bare {...} object with the same fields. Named to match the
+	// frontend payload; the field itself is the credential JSON.
+	Credentials string `json:"credentials" binding:"required"`
+	ProxyID     *int64 `json:"proxy_id"`
+}
+
+// ImportOAuthCredentials imports an already-issued Claude OAuth credential file
+// and returns the same TokenInfo shape as the interactive OAuth exchange, so the
+// operator can create an account from a credential they already hold.
+// POST /api/v1/admin/accounts/import-oauth-credentials
+func (h *OAuthHandler) ImportOAuthCredentials(c *gin.Context) {
+	var req ImportOAuthCredentialsRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.BadRequest(c, "Invalid request: "+err.Error())
+		return
+	}
+
+	tokenInfo, err := h.oauthService.ImportOAuthCredentials(c.Request.Context(), &service.ImportOAuthCredentialsInput{
+		Raw:     req.Credentials,
+		ProxyID: req.ProxyID,
+	})
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+
+	response.Success(c, tokenInfo)
+}
+
 func (h *OAuthHandler) cookieAuth(c *gin.Context, scope string) {
 	var req CookieAuthRequest
 	if err := c.ShouldBindJSON(&req); err != nil {

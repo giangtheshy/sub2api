@@ -13,10 +13,12 @@ import (
 
 type ContentModerationHandler struct {
 	service *service.ContentModerationService
+	// gatewayService 持有会话屏蔽表（Redis），用于列出/解除当前生效的屏蔽项。
+	gatewayService *service.OpenAIGatewayService
 }
 
-func NewContentModerationHandler(svc *service.ContentModerationService) *ContentModerationHandler {
-	return &ContentModerationHandler{service: svc}
+func NewContentModerationHandler(svc *service.ContentModerationService, gatewaySvc *service.OpenAIGatewayService) *ContentModerationHandler {
+	return &ContentModerationHandler{service: svc, gatewayService: gatewaySvc}
 }
 
 type contentModerationConfigRequest struct {

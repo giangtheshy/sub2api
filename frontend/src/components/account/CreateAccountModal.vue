@@ -2236,6 +2236,7 @@
           </div>
           <button
             type="button"
+            data-testid="create-temp-unschedulable-toggle"
             @click="tempUnschedEnabled = !tempUnschedEnabled"
             :class="[
               'relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2',
@@ -2545,6 +2546,7 @@
             </div>
             <button
               type="button"
+              data-testid="create-rpm-limit-toggle"
               @click="rpmLimitEnabled = !rpmLimitEnabled"
               :class="[
                 'relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2',
@@ -2658,6 +2660,7 @@
             </div>
             <button
               type="button"
+              data-testid="create-tls-fingerprint-toggle"
               @click="tlsFingerprintEnabled = !tlsFingerprintEnabled"
               :class="[
                 'relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2',
@@ -2693,6 +2696,7 @@
             </div>
             <button
               type="button"
+              data-testid="create-session-id-masking-toggle"
               @click="sessionIdMaskingEnabled = !sessionIdMaskingEnabled"
               :class="[
                 'relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2',
@@ -3287,6 +3291,7 @@
         :allow-multiple="form.platform === 'anthropic'"
         :show-cookie-option="form.platform === 'anthropic'"
         :show-cookie-file-option="form.platform === 'anthropic'"
+        :show-import-credentials-option="form.platform === 'anthropic'"
         :show-cookie-account-mode="form.platform === 'anthropic'"
         :show-refresh-token-option="form.platform === 'openai' || form.platform === 'antigravity' || form.platform === 'grok'"
         :show-mobile-refresh-token-option="form.platform === 'openai'"
@@ -3304,6 +3309,7 @@
         @generate-url="handleGenerateUrl"
         @cookie-auth="handleCookieAuth"
         @import-cookie-file="handleImportCookieFile"
+        @import-oauth-credentials="handleImportOAuthCredentials"
         @validate-refresh-token="handleValidateRefreshToken"
         @validate-mobile-refresh-token="handleOpenAIValidateMobileRT"
         @validate-session-token="handleValidateSessionToken"
@@ -5363,7 +5369,10 @@ const createAccountAndFinish = async (
   platform: AccountPlatform,
   type: AccountType,
   credentials: Record<string, unknown>,
-  extra?: Record<string, unknown>
+  extra?: Record<string, unknown>,
+  // Cookie/credential imports learn the account identity from the upstream
+  // response, so they need a name even when the operator left the field blank.
+  options: { name?: string } = {}
 ) => {
   if (!applyTempUnschedConfig(credentials)) {
     return
@@ -5427,7 +5436,7 @@ const createAccountAndFinish = async (
     }
   }
   await doCreateAccount({
-    name: form.name,
+    name: options.name || form.name,
     notes: form.notes,
     platform,
     type,
@@ -6318,6 +6327,75 @@ const handleGrokExchange = async (authCode: string) => {
   }
 }
 
+/**
+ * Copies the Anthropic account-control switches from the form into `extra`.
+ *
+ * Every Anthropic creation path (authorization code, cookie auth, credential
+ * import, cookie account) has to write the exact same keys: the panel shows one
+ * set of switches, so an account created through any of them must come out
+ * configured the same way. Keeping the block inline per path is what let the
+ * import path silently drop RPM/TLS/session settings — the operator saw the
+ * switches, the account was created without them, and only a follow-up Edit
+ * applied what the form already said.
+ */
+const applyAccountControlExtras = (extra: Record<string, unknown>) => {
+  // Window cost limit
+  if (windowCostEnabled.value && windowCostLimit.value != null && windowCostLimit.value > 0) {
+    extra.window_cost_limit = windowCostLimit.value
+    extra.window_cost_sticky_reserve = windowCostStickyReserve.value ?? 10
+  }
+
+  // Session count limit
+  if (sessionLimitEnabled.value && maxSessions.value != null && maxSessions.value > 0) {
+    extra.max_sessions = maxSessions.value
+    extra.session_idle_timeout_minutes = sessionIdleTimeout.value ?? 5
+  }
+
+  // RPM limit
+  if (rpmLimitEnabled.value) {
+    const DEFAULT_BASE_RPM = 15
+    extra.base_rpm = (baseRpm.value != null && baseRpm.value > 0)
+      ? baseRpm.value
+      : DEFAULT_BASE_RPM
+    extra.rpm_strategy = rpmStrategy.value
+    if (rpmStickyBuffer.value != null && rpmStickyBuffer.value > 0) {
+      extra.rpm_sticky_buffer = rpmStickyBuffer.value
+    }
+  }
+
+  // UMQ mode（独立于 RPM）
+  if (userMsgQueueMode.value) {
+    extra.user_msg_queue_mode = userMsgQueueMode.value
+  }
+
+  // TLS fingerprint
+  if (tlsFingerprintEnabled.value) {
+    extra.enable_tls_fingerprint = true
+    if (tlsFingerprintProfileId.value) {
+      extra.tls_fingerprint_profile_id = tlsFingerprintProfileId.value
+    }
+  }
+
+  // Session ID masking
+  if (sessionIdMaskingEnabled.value) {
+    extra.session_id_masking_enabled = true
+  }
+
+  // Cache TTL override
+  if (cacheTTLOverrideEnabled.value) {
+    extra.cache_ttl_override_enabled = true
+    extra.cache_ttl_override_target = cacheTTLOverrideTarget.value
+  }
+
+  // Custom base URL relay
+  if (customBaseUrlEnabled.value && customBaseUrl.value.trim()) {
+    extra.custom_base_url_enabled = true
+    extra.custom_base_url = customBaseUrl.value.trim()
+  }
+
+  return extra
+}
+
 // Anthropic OAuth 授权码兑换
 const handleAnthropicExchange = async (authCode: string) => {
   if (!authCode.trim() || !oauth.sessionId.value) return
@@ -6340,61 +6418,7 @@ const handleAnthropicExchange = async (authCode: string) => {
 
     // Build extra with quota control settings
     const baseExtra = oauth.buildExtraInfo(tokenInfo) || {}
-    const extra: Record<string, unknown> = { ...baseExtra }
-
-    // Add window cost limit settings
-    if (windowCostEnabled.value && windowCostLimit.value != null && windowCostLimit.value > 0) {
-      extra.window_cost_limit = windowCostLimit.value
-      extra.window_cost_sticky_reserve = windowCostStickyReserve.value ?? 10
-    }
-
-    // Add session limit settings
-    if (sessionLimitEnabled.value && maxSessions.value != null && maxSessions.value > 0) {
-      extra.max_sessions = maxSessions.value
-      extra.session_idle_timeout_minutes = sessionIdleTimeout.value ?? 5
-    }
-
-    // Add RPM limit settings
-    if (rpmLimitEnabled.value) {
-      const DEFAULT_BASE_RPM = 15
-      extra.base_rpm = (baseRpm.value != null && baseRpm.value > 0)
-        ? baseRpm.value
-        : DEFAULT_BASE_RPM
-      extra.rpm_strategy = rpmStrategy.value
-      if (rpmStickyBuffer.value != null && rpmStickyBuffer.value > 0) {
-        extra.rpm_sticky_buffer = rpmStickyBuffer.value
-      }
-    }
-
-    // UMQ mode（独立于 RPM）
-    if (userMsgQueueMode.value) {
-      extra.user_msg_queue_mode = userMsgQueueMode.value
-    }
-
-    // Add TLS fingerprint settings
-    if (tlsFingerprintEnabled.value) {
-      extra.enable_tls_fingerprint = true
-      if (tlsFingerprintProfileId.value) {
-        extra.tls_fingerprint_profile_id = tlsFingerprintProfileId.value
-      }
-    }
-
-    // Add session ID masking settings
-    if (sessionIdMaskingEnabled.value) {
-      extra.session_id_masking_enabled = true
-    }
-
-    // Add cache TTL override settings
-    if (cacheTTLOverrideEnabled.value) {
-      extra.cache_ttl_override_enabled = true
-      extra.cache_ttl_override_target = cacheTTLOverrideTarget.value
-    }
-
-    // Add custom base URL settings
-    if (customBaseUrlEnabled.value && customBaseUrl.value.trim()) {
-      extra.custom_base_url_enabled = true
-      extra.custom_base_url = customBaseUrl.value.trim()
-    }
+    const extra = applyAccountControlExtras({ ...baseExtra })
 
     const credentials: Record<string, unknown> = { ...tokenInfo }
     applyInterceptWarmup(credentials, interceptWarmupRequests.value, 'create')
@@ -6460,32 +6484,62 @@ const handleCreateCookieAccount = async (content: string) => {
       validated.info.org_name ||
       'claude-cookie'
 
-    await adminAPI.accounts.create({
-      name,
-      notes: form.notes,
-      platform: 'anthropic',
-      type: 'cookie',
-      credentials: validated.credentials,
-      extra: validated.extra,
-      proxy_id: form.proxy_id,
-      concurrency: form.concurrency,
-      load_factor: form.load_factor ?? undefined,
-      priority: form.priority,
-      rate_multiplier: form.rate_multiplier,
-      group_ids: form.group_ids,
-      expires_at: form.expires_at,
-      auto_pause_on_expired: autoPauseOnExpired.value
+    const extra = applyAccountControlExtras({
+      ...((validated.extra as Record<string, unknown>) || {})
     })
+    const credentials: Record<string, unknown> = {
+      ...((validated.credentials as Record<string, unknown>) || {})
+    }
+    applyInterceptWarmup(credentials, interceptWarmupRequests.value, 'create')
 
-    appStore.showSuccess(t('admin.accounts.oauth.successCreated', { count: 1 }))
-    emit('created')
-    handleClose()
+    await createAccountAndFinish('anthropic', 'cookie', credentials, extra, { name })
   } catch (error: unknown) {
     oauth.error.value = resolveAuthErrorMessage(
       error,
       t,
       'admin.accounts.oauth.cookieAuthFailed'
     )
+  } finally {
+    oauth.loading.value = false
+  }
+}
+
+/**
+ * Imports an already-issued Claude OAuth credential file (claudeAiOauth JSON)
+ * and creates a normal OAuth account from it.
+ *
+ * This mirrors the cookie-auth success path exactly — same TokenInfo shape, same
+ * extra-building, same `type: 'oauth'` create — except the token comes from a
+ * credential the operator already holds instead of a cookie exchange. No
+ * authorization endpoint is contacted.
+ */
+const handleImportOAuthCredentials = async (content: string) => {
+  oauth.loading.value = true
+  oauth.error.value = ''
+
+  try {
+    const tokenInfo = await adminAPI.accounts.importOAuthCredentials({
+      credentials: content.trim(),
+      ...(form.proxy_id ? { proxy_id: form.proxy_id } : {})
+    })
+
+    const baseExtra = oauth.buildExtraInfo(tokenInfo as Record<string, unknown>) || {}
+    const extra = applyAccountControlExtras({ ...baseExtra })
+
+    const credentials: Record<string, unknown> = { ...tokenInfo }
+    applyInterceptWarmup(credentials, interceptWarmupRequests.value, 'create')
+
+    const name =
+      form.name?.trim() ||
+      (tokenInfo.email_address as string | undefined) ||
+      'claude-oauth'
+
+    // Routed through createAccountAndFinish rather than a bespoke create call so
+    // the imported account picks up temp-unschedulable rules, excluded models and
+    // the mixed-channel guard exactly like an authorization-code account does.
+    await createAccountAndFinish('anthropic', 'oauth', credentials, extra, { name })
+  } catch (error: unknown) {
+    oauth.error.value = resolveAuthErrorMessage(error, t, 'admin.accounts.oauth.authFailed')
   } finally {
     oauth.loading.value = false
   }
@@ -6538,66 +6592,13 @@ const handleCookieAuth = async (
 
         // Build extra with quota control settings
         const baseExtra = oauth.buildExtraInfo(tokenInfo) || {}
-        const extra: Record<string, unknown> = { ...baseExtra }
-
-        // Add window cost limit settings
-        if (windowCostEnabled.value && windowCostLimit.value != null && windowCostLimit.value > 0) {
-          extra.window_cost_limit = windowCostLimit.value
-          extra.window_cost_sticky_reserve = windowCostStickyReserve.value ?? 10
-        }
-
-        // Add session limit settings
-        if (sessionLimitEnabled.value && maxSessions.value != null && maxSessions.value > 0) {
-          extra.max_sessions = maxSessions.value
-          extra.session_idle_timeout_minutes = sessionIdleTimeout.value ?? 5
-        }
-
-        // Add RPM limit settings
-        if (rpmLimitEnabled.value) {
-          const DEFAULT_BASE_RPM = 15
-          extra.base_rpm = (baseRpm.value != null && baseRpm.value > 0)
-            ? baseRpm.value
-            : DEFAULT_BASE_RPM
-          extra.rpm_strategy = rpmStrategy.value
-          if (rpmStickyBuffer.value != null && rpmStickyBuffer.value > 0) {
-            extra.rpm_sticky_buffer = rpmStickyBuffer.value
-          }
-        }
-
-        // UMQ mode（独立于 RPM）
-        if (userMsgQueueMode.value) {
-          extra.user_msg_queue_mode = userMsgQueueMode.value
-        }
-
-        // Add TLS fingerprint settings
-        if (tlsFingerprintEnabled.value) {
-          extra.enable_tls_fingerprint = true
-          if (tlsFingerprintProfileId.value) {
-            extra.tls_fingerprint_profile_id = tlsFingerprintProfileId.value
-          }
-        }
-
-        // Add session ID masking settings
-        if (sessionIdMaskingEnabled.value) {
-          extra.session_id_masking_enabled = true
-        }
-
-        // Add cache TTL override settings
-        if (cacheTTLOverrideEnabled.value) {
-          extra.cache_ttl_override_enabled = true
-          extra.cache_ttl_override_target = cacheTTLOverrideTarget.value
-        }
-
-        // Add custom base URL settings
-        if (customBaseUrlEnabled.value && customBaseUrl.value.trim()) {
-          extra.custom_base_url_enabled = true
-          extra.custom_base_url = customBaseUrl.value.trim()
-        }
+        const extra = applyAccountControlExtras({ ...baseExtra })
 
         const accountName = keys.length > 1 ? `${form.name} #${i + 1}` : form.name
 
         const credentials: Record<string, unknown> = { ...tokenInfo }
         applyInterceptWarmup(credentials, interceptWarmupRequests.value, 'create')
+        applyExcludedModels(credentials)
         if (tempUnschedEnabled.value) {
           credentials.temp_unschedulable_enabled = true
           credentials.temp_unschedulable_rules = tempUnschedPayload

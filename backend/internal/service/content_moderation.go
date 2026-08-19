@@ -2967,8 +2967,15 @@ func maskSecretTail(secret string) string {
 	return strings.Repeat("*", 8) + secret[len(secret)-4:]
 }
 
-// CyberPolicyRecordInput 是一次 cyber_policy 硬阻断的风控记录入参。
+// CyberPolicyRecordInput 是一次上游硬阻断的风控记录入参。
+// 既服务于 OpenAI/Codex 的 cyber_policy，也服务于 Anthropic 原生链路的
+// stop_reason=refusal / 403 permission_error（通过 Category/Provider 区分）。
 type CyberPolicyRecordInput struct {
+	// Category 落库到 highest_category，用于在风控中心区分信号来源。
+	// 留空按 "cyber_policy" 处理（保持既有调用方行为不变）。
+	Category string
+	// Provider 落库到 provider 列。留空按 "openai" 处理。
+	Provider        string
 	RequestID       string
 	UserID          int64
 	UserEmail       string
@@ -3021,6 +3028,17 @@ func (s *ContentModerationService) RecordCyberPolicyEvent(ctx context.Context, i
 	if in.UpstreamInTok > 0 || in.UpstreamOutTok > 0 {
 		errBody = fmt.Sprintf("%s\nupstream_usage=in:%d,out:%d", errBody, in.UpstreamInTok, in.UpstreamOutTok)
 	}
+	provider := strings.TrimSpace(in.Provider)
+	if provider == "" {
+		provider = "openai"
+	}
+	category := strings.TrimSpace(in.Category)
+	if category == "" {
+		category = "cyber_policy"
+	}
+	// Action 统一为 cyber_policy：封号计数的排除开关
+	// (CyberPolicyExcludeFromBanCount) 与风控中心筛选都按该值工作，
+	// Anthropic 硬拒答复用同一套语义，运营只需一个开关。
 	log := &ContentModerationLog{
 		RequestID:       in.RequestID,
 		UserID:          userID,
@@ -3030,12 +3048,12 @@ func (s *ContentModerationService) RecordCyberPolicyEvent(ctx context.Context, i
 		GroupID:         cloneInt64Ptr(in.GroupID),
 		GroupName:       in.GroupName,
 		Endpoint:        in.Endpoint,
-		Provider:        "openai",
+		Provider:        provider,
 		Model:           in.Model,
 		Mode:            "post_upstream",
 		Action:          ContentModerationActionCyberPolicy,
 		Flagged:         true,
-		HighestCategory: "cyber_policy",
+		HighestCategory: category,
 		HighestScore:    1.0,
 		Error:           trimRunes(redactContentModerationSecrets(errBody), maxModerationExcerptRunes*4),
 		CreatedAt:       time.Now(),

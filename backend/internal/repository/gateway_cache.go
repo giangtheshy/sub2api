@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strconv"
@@ -140,12 +141,102 @@ func (c *gatewayCache) SetCyberSessionBlocked(ctx context.Context, key string, t
 }
 
 // IsCyberSessionBlocked 查询会话是否在屏蔽表中。
+// 只看 key 是否存在，因此裸标记（"1"）与带 meta 的 JSON 值都能正常拦截。
 func (c *gatewayCache) IsCyberSessionBlocked(ctx context.Context, key string) (bool, error) {
 	n, err := c.rdb.Exists(ctx, cyberSessionBlockPrefix+key).Result()
 	if err != nil {
 		return false, err
 	}
 	return n > 0, nil
+}
+
+// cyberSessionBlockIndexKey 是可枚举屏蔽项的索引集合。
+// Redis 没有"列出某前缀的所有 key"的廉价原语（KEYS/SCAN 在热实例上代价高），
+// 因此写入时顺带维护一个 SET，列举时惰性剔除已过期成员。
+const cyberSessionBlockIndexKey = "cyber_session_block:index"
+
+// SetCyberSessionBlockedMeta 写屏蔽项，值为 JSON 元信息，并登记到索引集合。
+// 元信息与屏蔽项共享同一个 key 和 TTL——不存在"标记还在但 meta 没了"的中间态。
+func (c *gatewayCache) SetCyberSessionBlockedMeta(ctx context.Context, key string, meta service.CyberBlockMeta, ttl time.Duration) error {
+	now := time.Now().UTC()
+	if meta.Key == "" {
+		meta.Key = key
+	}
+	if meta.BlockedAt.IsZero() {
+		meta.BlockedAt = now
+	}
+	// 解除时间由写入方（掌握 TTL 的一方）补齐，管理端才能显示"还剩多久自动解封"。
+	if meta.ExpiresAt.IsZero() && ttl > 0 {
+		meta.ExpiresAt = now.Add(ttl)
+	}
+	payload, err := json.Marshal(meta)
+	if err != nil {
+		return fmt.Errorf("marshal cyber block meta: %w", err)
+	}
+	pipe := c.rdb.TxPipeline()
+	pipe.Set(ctx, cyberSessionBlockPrefix+key, payload, ttl)
+	pipe.SAdd(ctx, cyberSessionBlockIndexKey, key)
+	if _, err := pipe.Exec(ctx); err != nil {
+		return fmt.Errorf("write cyber block meta: %w", err)
+	}
+	return nil
+}
+
+// ListCyberSessionBlocks 返回仍然生效的屏蔽项。
+// 索引成员对应的 key 已过期（或是无 meta 的旧版裸标记）时，从索引中剔除，
+// 避免集合随时间无限增长。
+func (c *gatewayCache) ListCyberSessionBlocks(ctx context.Context) ([]service.CyberBlockMeta, error) {
+	members, err := c.rdb.SMembers(ctx, cyberSessionBlockIndexKey).Result()
+	if err != nil {
+		if errors.Is(err, redis.Nil) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("read cyber block index: %w", err)
+	}
+	if len(members) == 0 {
+		return nil, nil
+	}
+	keys := make([]string, 0, len(members))
+	for _, m := range members {
+		keys = append(keys, cyberSessionBlockPrefix+m)
+	}
+	values, err := c.rdb.MGet(ctx, keys...).Result()
+	if err != nil {
+		return nil, fmt.Errorf("read cyber block meta: %w", err)
+	}
+	items := make([]service.CyberBlockMeta, 0, len(values))
+	stale := make([]string, 0)
+	for i, v := range values {
+		raw, ok := v.(string)
+		if !ok || raw == "" {
+			stale = append(stale, members[i])
+			continue
+		}
+		var meta service.CyberBlockMeta
+		if err := json.Unmarshal([]byte(raw), &meta); err != nil {
+			// 旧版裸标记 "1"：仍在拦截，但没有可展示信息，不列出也不删除。
+			continue
+		}
+		if meta.Key == "" {
+			meta.Key = members[i]
+		}
+		items = append(items, meta)
+	}
+	if len(stale) > 0 {
+		_ = c.rdb.SRem(ctx, cyberSessionBlockIndexKey, stale).Err()
+	}
+	return items, nil
+}
+
+// DeleteCyberSessionBlock 人工解封：删除屏蔽项并从索引移除。幂等。
+func (c *gatewayCache) DeleteCyberSessionBlock(ctx context.Context, key string) error {
+	pipe := c.rdb.TxPipeline()
+	pipe.Del(ctx, cyberSessionBlockPrefix+key)
+	pipe.SRem(ctx, cyberSessionBlockIndexKey, key)
+	if _, err := pipe.Exec(ctx); err != nil {
+		return fmt.Errorf("delete cyber block: %w", err)
+	}
+	return nil
 }
 
 var claimLiveControllerScript = redis.NewScript(`

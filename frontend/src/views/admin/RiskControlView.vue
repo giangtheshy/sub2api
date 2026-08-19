@@ -230,6 +230,57 @@
           </div>
         </div>
 
+        <div v-if="riskControlEnabled" class="card">
+          <div class="flex flex-col gap-3 border-b border-gray-100 px-6 py-4 dark:border-dark-700 lg:flex-row lg:items-center lg:justify-between">
+            <div>
+              <h2 class="text-lg font-semibold text-gray-900 dark:text-white">{{ t('admin.riskControl.blocks.title') }}</h2>
+              <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">{{ t('admin.riskControl.blocks.hint') }}</p>
+            </div>
+            <button type="button" class="btn btn-secondary inline-flex items-center gap-2" :disabled="blocksLoading" @click="loadBlocks">
+              <Icon name="refresh" size="sm" :class="blocksLoading ? 'animate-spin' : ''" />
+              {{ t('admin.riskControl.refresh') }}
+            </button>
+          </div>
+
+          <div v-if="blocks.length === 0" class="px-6 py-8 text-center text-sm text-gray-500 dark:text-gray-400">
+            {{ t('admin.riskControl.blocks.empty') }}
+          </div>
+          <div v-else class="overflow-x-auto">
+            <table class="min-w-full divide-y divide-gray-200 dark:divide-dark-700">
+              <thead class="bg-gray-50 dark:bg-dark-800">
+                <tr>
+                  <th class="px-5 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500 dark:text-gray-400">{{ t('admin.riskControl.blocks.identity') }}</th>
+                  <th class="px-5 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500 dark:text-gray-400">{{ t('admin.riskControl.blocks.kind') }}</th>
+                  <th class="px-5 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500 dark:text-gray-400">{{ t('admin.riskControl.blocks.signal') }}</th>
+                  <th class="px-5 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500 dark:text-gray-400">{{ t('admin.riskControl.blocks.blockedAt') }}</th>
+                  <th class="px-5 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500 dark:text-gray-400">{{ t('admin.riskControl.blocks.expiresAt') }}</th>
+                  <th class="px-5 py-3 text-right text-xs font-medium uppercase tracking-wider text-gray-500 dark:text-gray-400">{{ t('admin.riskControl.blocks.actions') }}</th>
+                </tr>
+              </thead>
+              <tbody class="divide-y divide-gray-100 dark:divide-dark-700">
+                <tr v-for="item in blocks" :key="item.key">
+                  <td class="px-5 py-3 font-mono text-sm text-gray-900 dark:text-white">{{ item.masked || item.key.slice(0, 12) }}</td>
+                  <td class="px-5 py-3 text-sm text-gray-600 dark:text-gray-300">{{ blockKindLabel(item.kind) }}</td>
+                  <td class="px-5 py-3 text-sm text-gray-600 dark:text-gray-300">{{ blockSignalLabel(item.signal) }}</td>
+                  <td class="px-5 py-3 text-sm text-gray-500 dark:text-gray-400">{{ formatBlockTime(item.blockedAt) }}</td>
+                  <td class="px-5 py-3 text-sm text-gray-500 dark:text-gray-400">{{ formatBlockTime(item.expiresAt) }}</td>
+                  <td class="px-5 py-3 text-right">
+                    <button
+                      type="button"
+                      class="btn btn-secondary inline-flex items-center gap-2 text-red-600 hover:text-red-700 dark:text-red-300"
+                      :disabled="unblockingKey === item.key"
+                      @click="unblockIdentity(item)"
+                    >
+                      <Icon name="trash" size="sm" :class="unblockingKey === item.key ? 'animate-pulse' : ''" />
+                      {{ t('admin.riskControl.blocks.unblock') }}
+                    </button>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+
         <div class="card">
           <div class="flex flex-col gap-4 border-b border-gray-100 px-6 py-4 dark:border-dark-700">
             <div class="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
@@ -1132,6 +1183,7 @@ import ProxySelector from '@/components/common/ProxySelector.vue'
 import { adminAPI } from '@/api/admin'
 import type {
   ContentModerationAPIKeyLoad,
+  CyberBlockItem,
   ContentModerationAPIKeyStatus,
   ContentModerationConfig,
   ContentModerationLog,
@@ -1205,6 +1257,9 @@ const logsLoading = ref(false)
 const statusLoading = ref(false)
 const apiKeyTesting = ref(false)
 const hashActionLoading = ref(false)
+const blocksLoading = ref(false)
+const blocks = ref<CyberBlockItem[]>([])
+const unblockingKey = ref<string | null>(null)
 const unbanningUserID = ref<number | null>(null)
 const settingsOpen = ref(false)
 const activeSettingsTab = ref<SettingsTab>('basic')
@@ -2357,8 +2412,68 @@ function formatNumber(value: number): string {
   return new Intl.NumberFormat().format(value)
 }
 
+// 屏蔽表只在风控总开关打开时才有意义；关掉时整块隐藏，避免展示一份永远为空的表。
+const riskControlEnabled = computed(() => Boolean(status.value?.risk_control_enabled))
+
+// 后端的 kind/signal 用 snake_case 且可能含 '+'（组合层级），
+// 不能直接拼进 i18n 路径；这里显式映射到安全的键名。
+const blockKindI18nKeys: Record<string, string> = {
+  'x_user_id+session': 'xUserIdSession',
+  x_user_id: 'xUserId',
+  session: 'session',
+  apikey_user: 'apikeyUser',
+  unknown: 'unknown',
+}
+
+const blockSignalI18nKeys: Record<string, string> = {
+  refusal: 'refusal',
+  permission_error: 'permissionError',
+  cyber_policy: 'cyberPolicy',
+}
+
+function blockKindLabel(kind: string): string {
+  const mapped = blockKindI18nKeys[kind]
+  // 未知层级直接回显原值，好过显示一段占位文案掩盖真实内容。
+  return mapped ? t(`admin.riskControl.blocks.kinds.${mapped}`) : kind || '-'
+}
+
+function blockSignalLabel(signal: string): string {
+  const mapped = blockSignalI18nKeys[signal]
+  return mapped ? t(`admin.riskControl.blocks.signals.${mapped}`) : signal || '-'
+}
+
+function formatBlockTime(value: string): string {
+  if (!value) return '-'
+  return formatDateTime(value)
+}
+
+async function loadBlocks() {
+  blocksLoading.value = true
+  try {
+    blocks.value = await adminAPI.riskControl.listBlocks()
+  } catch (err) {
+    appStore.showError(extractApiErrorMessage(err, t('admin.riskControl.blocks.loadFailed')))
+  } finally {
+    blocksLoading.value = false
+  }
+}
+
+async function unblockIdentity(item: CyberBlockItem) {
+  unblockingKey.value = item.key
+  try {
+    await adminAPI.riskControl.unblock(item.key)
+    blocks.value = blocks.value.filter((b) => b.key !== item.key)
+    appStore.showSuccess(t('admin.riskControl.blocks.unblockSuccess'))
+  } catch (err) {
+    appStore.showError(extractApiErrorMessage(err, t('admin.riskControl.blocks.unblockFailed')))
+  } finally {
+    unblockingKey.value = null
+  }
+}
+
 onMounted(() => {
   void loadAll()
+  void loadBlocks()
   statusTimer = window.setInterval(() => {
     void loadStatus(true)
   }, 15000)

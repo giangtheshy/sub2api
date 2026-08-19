@@ -366,6 +366,16 @@ func (s *GatewayService) handleErrorResponse(ctx context.Context, resp *http.Res
 			account.ID, account.Name, resp.StatusCode, readErr)
 	}
 
+	// 硬阻断信号：403 + error.type=="permission_error"（组织/账号被策略封禁）。
+	// 必须在 failover 吞掉错误之前打标记，否则 handler 事后读不到证据。
+	if ok, msg := DetectAnthropicPermissionError(resp.StatusCode, body); ok {
+		markAnthropicRefusalForAccount(c, account, AnthropicRefusalMark{
+			Signal:         AnthropicRefusalSignalPermissionError,
+			Message:        msg,
+			UpstreamStatus: resp.StatusCode,
+		})
+	}
+
 	// 调试日志：打印上游错误响应
 	logger.LegacyPrintf("service.gateway", "[Forward] Upstream error (non-retryable): Account=%d(%s) Status=%d RequestID=%s Body=%s",
 		account.ID, account.Name, resp.StatusCode, resp.Header.Get("x-request-id"), truncateString(string(body), 1000))
@@ -940,6 +950,14 @@ func (s *GatewayService) handleStreamingResponse(ctx context.Context, resp *http
 			if u, ok := event["usage"].(map[string]any); ok {
 				eventChanged = reconcileCachedTokens(u) || eventChanged
 			}
+			// 硬拒答信号：delta.stop_reason=="refusal"。复用已反序列化的 event，
+			// 不重复解析、不改动透传字节；仅打标记，由 handler 事后写风控日志。
+			if DetectAnthropicRefusalSSEDelta(event) {
+				markAnthropicRefusalForAccount(c, account, AnthropicRefusalMark{
+					Signal:         AnthropicRefusalSignalRefusal,
+					UpstreamStatus: http.StatusOK,
+				})
+			}
 		}
 
 		// Cache TTL Override: 重写 SSE 事件中的 cache_creation 分类。
@@ -1388,6 +1406,15 @@ func (s *GatewayService) handleNonStreamingResponse(ctx context.Context, resp *h
 		observer = beginUpstreamResponseModelObservation(c)
 	}
 	observer.ObserveAnthropic(body)
+
+	// 硬拒答信号（非流式）：顶层 stop_reason=="refusal"。只打标记，响应照常透传。
+	if ok, detail := DetectAnthropicRefusalJSON(body); ok {
+		markAnthropicRefusalForAccount(c, account, AnthropicRefusalMark{
+			Signal:         AnthropicRefusalSignalRefusal,
+			Message:        detail,
+			UpstreamStatus: resp.StatusCode,
+		})
+	}
 
 	// 解析usage
 	var response struct {

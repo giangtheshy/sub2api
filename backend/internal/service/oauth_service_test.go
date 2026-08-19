@@ -19,6 +19,7 @@ type mockClaudeOAuthClient struct {
 	getAuthCodeFunc  func(ctx context.Context, cookieHeader, orgUUID, scope, codeChallenge, state, proxyURL string) (string, error)
 	exchangeCodeFunc func(ctx context.Context, code, codeVerifier, state, proxyURL string, isSetupToken bool) (*oauth.TokenResponse, error)
 	refreshTokenFunc func(ctx context.Context, refreshToken, proxyURL string) (*oauth.TokenResponse, error)
+	bootstrapFunc    func(ctx context.Context, accessToken, proxyURL string) (*ClaudeBootstrapInfo, error)
 }
 
 func (m *mockClaudeOAuthClient) GetOrganizationUUID(ctx context.Context, cookieHeader, proxyURL string) (string, error) {
@@ -47,6 +48,14 @@ func (m *mockClaudeOAuthClient) RefreshToken(ctx context.Context, refreshToken, 
 		return m.refreshTokenFunc(ctx, refreshToken, proxyURL)
 	}
 	panic("RefreshToken not implemented")
+}
+
+func (m *mockClaudeOAuthClient) BootstrapAccount(ctx context.Context, accessToken, proxyURL string) (*ClaudeBootstrapInfo, error) {
+	if m.bootstrapFunc != nil {
+		return m.bootstrapFunc(ctx, accessToken, proxyURL)
+	}
+	// Default: no enrichment available (mirrors an expired access token).
+	return nil, fmt.Errorf("bootstrap not available")
 }
 
 // --- mock: ProxyRepository (最小实现，仅覆盖 OAuthService 依赖的方法) ---
@@ -617,4 +626,80 @@ func TestOAuthService_Stop_NoPanic(t *testing.T) {
 
 	// 多次调用也不应 panic
 	svc.Stop()
+}
+
+func TestOAuthService_ImportOAuthCredentials(t *testing.T) {
+	t.Parallel()
+
+	// Synthetic tokens — never a real credential.
+	const raw = `{"claudeAiOauth":{"accessToken":"sk-ant-oat01-IMPORT","refreshToken":"sk-ant-ort01-IMPORT","expiresAt":1787183506000,"subscriptionType":"max_20x"}}`
+
+	t.Run("imports tokens and normalizes fields", func(t *testing.T) {
+		bootCalled := false
+		client := &mockClaudeOAuthClient{
+			bootstrapFunc: func(_ context.Context, accessToken, _ string) (*ClaudeBootstrapInfo, error) {
+				bootCalled = true
+				if accessToken != "sk-ant-oat01-IMPORT" {
+					t.Errorf("bootstrap got access token %q", accessToken)
+				}
+				return &ClaudeBootstrapInfo{
+					AccountUUID:      "acc-123",
+					OrganizationUUID: "org-456",
+					EmailAddress:     "user@example.com",
+				}, nil
+			},
+		}
+		svc := NewOAuthService(&mockProxyRepoForOAuth{}, client)
+		defer svc.Stop()
+
+		info, err := svc.ImportOAuthCredentials(context.Background(), &ImportOAuthCredentialsInput{Raw: raw})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if info.AccessToken != "sk-ant-oat01-IMPORT" || info.RefreshToken != "sk-ant-ort01-IMPORT" {
+			t.Fatalf("tokens = %q / %q", info.AccessToken, info.RefreshToken)
+		}
+		if info.ExpiresAt != 1787183506 {
+			t.Errorf("ExpiresAt = %d, want 1787183506", info.ExpiresAt)
+		}
+		if info.TokenType != "Bearer" {
+			t.Errorf("TokenType = %q, want Bearer", info.TokenType)
+		}
+		if !bootCalled {
+			t.Error("expected bootstrap enrichment to be attempted")
+		}
+		if info.OrgUUID != "org-456" || info.AccountUUID != "acc-123" || info.EmailAddress != "user@example.com" {
+			t.Errorf("identity not enriched: %+v", info)
+		}
+	})
+
+	t.Run("bootstrap failure does not fail import", func(t *testing.T) {
+		client := &mockClaudeOAuthClient{
+			bootstrapFunc: func(_ context.Context, _, _ string) (*ClaudeBootstrapInfo, error) {
+				return nil, fmt.Errorf("access token expired")
+			},
+		}
+		svc := NewOAuthService(&mockProxyRepoForOAuth{}, client)
+		defer svc.Stop()
+
+		info, err := svc.ImportOAuthCredentials(context.Background(), &ImportOAuthCredentialsInput{Raw: raw})
+		if err != nil {
+			t.Fatalf("import must not fail on bootstrap error: %v", err)
+		}
+		if info.RefreshToken != "sk-ant-ort01-IMPORT" {
+			t.Fatalf("refresh token lost: %q", info.RefreshToken)
+		}
+		if info.OrgUUID != "" || info.AccountUUID != "" {
+			t.Errorf("identity should be empty on bootstrap failure: %+v", info)
+		}
+	})
+
+	t.Run("rejects invalid credential blob", func(t *testing.T) {
+		svc := NewOAuthService(&mockProxyRepoForOAuth{}, &mockClaudeOAuthClient{})
+		defer svc.Stop()
+
+		if _, err := svc.ImportOAuthCredentials(context.Background(), &ImportOAuthCredentialsInput{Raw: "garbage"}); err == nil {
+			t.Fatal("expected error for invalid blob")
+		}
+	})
 }

@@ -7,6 +7,7 @@ export type AuthInputMethod =
   | 'manual'
   | 'cookie'
   | 'cookie_file'
+  | 'import_credentials'
   | 'refresh_token'
   | 'mobile_refresh_token'
   | 'session_token'
@@ -214,6 +215,40 @@ export function useAccountOAuth() {
       .filter((k) => k)
   }
 
+  // Import an already-issued OAuth credential file (claudeAiOauth JSON).
+  //
+  // Unlike cookieAuth, this mints nothing: it hands the backend a credential the
+  // operator already holds and gets back the same TokenInfo shape, so the account
+  // is created through the normal OAuth pipeline with a working refresh token.
+  const importOAuthCredentials = async (
+    credentials: string,
+    proxyId?: number | null
+  ): Promise<TokenInfo | null> => {
+    if (!credentials.trim()) {
+      error.value = 'Please paste the OAuth credentials'
+      return null
+    }
+
+    loading.value = true
+    error.value = ''
+
+    try {
+      const proxyConfig = proxyId ? { proxy_id: proxyId } : {}
+      const tokenInfo = await adminAPI.accounts.importOAuthCredentials({
+        credentials: credentials.trim(),
+        ...proxyConfig
+      })
+      return tokenInfo as TokenInfo
+    } catch (err: any) {
+      error.value =
+        err.response?.data?.detail || err.message || 'Failed to import OAuth credentials'
+      appStore.showError(error.value)
+      return null
+    } finally {
+      loading.value = false
+    }
+  }
+
   /**
    * True when the pasted text is a whole cookie export (Netscape file or JSON)
    * rather than one sessionKey per line. Such input describes a single account
@@ -255,6 +290,7 @@ export function useAccountOAuth() {
     generateAuthUrl,
     exchangeAuthCode,
     cookieAuth,
+    importOAuthCredentials,
     parseSessionKeys,
     isCookieExport,
     buildExtraInfo

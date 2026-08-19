@@ -502,6 +502,27 @@ export async function validateClaudeCookie(payload: {
 }
 
 /**
+ * Import an already-issued Claude OAuth credential file (claudeAiOauth JSON).
+ *
+ * The backend contacts no authorization endpoint and mints nothing: it accepts a
+ * credential the operator already holds and returns the same TokenInfo shape as
+ * the interactive OAuth exchange, so the caller creates a normal OAuth account.
+ *
+ * @param payload - The raw credential JSON and an optional proxy
+ * @returns TokenInfo (access/refresh tokens, expiry, optional org/email)
+ */
+export async function importOAuthCredentials(payload: {
+  credentials: string
+  proxy_id?: number
+}): Promise<Record<string, unknown>> {
+  const { data } = await apiClient.post<Record<string, unknown>>(
+    '/admin/accounts/import-oauth-credentials',
+    payload
+  )
+  return data
+}
+
+/**
  * Batch create accounts
  * @param accounts - Array of account data
  * @returns Results of batch creation
@@ -1099,6 +1120,7 @@ export const accountsAPI = {
   generateAuthUrl,
   exchangeCode,
   validateClaudeCookie,
+  importOAuthCredentials,
   refreshOpenAIToken,
   batchCreate,
   batchUpdateCredentials,

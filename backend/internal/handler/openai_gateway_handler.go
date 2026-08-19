@@ -584,7 +584,7 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 		}()
 		cyberBlockKeyHTTP := ""
 		if service.GetOpsCyberPolicy(c) != nil {
-			cyberBlockKeyHTTP = service.CyberSessionBlockKey(apiKey.ID, c, sessionHashBody)
+			cyberBlockKeyHTTP = service.CyberSessionBlockKey(apiKey.ID, apiKeyUserID(apiKey), c, sessionHashBody)
 		}
 		h.recordCyberPolicyIfMarked(c, apiKey, account, subscription, reqModel, err != nil, cyberBlockKeyHTTP, clientRequestedUsageFields(c, channelMapping, reqModel, ""), service.HashUsageRequestPayload(body))
 		forwardDurationMs := time.Since(forwardStart).Milliseconds()
@@ -1132,7 +1132,7 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 		}()
 		cyberBlockKeyMsg := ""
 		if service.GetOpsCyberPolicy(c) != nil {
-			cyberBlockKeyMsg = service.CyberSessionBlockKey(apiKey.ID, c, body)
+			cyberBlockKeyMsg = service.CyberSessionBlockKey(apiKey.ID, apiKeyUserID(apiKey), c, body)
 		}
 		h.recordCyberPolicyIfMarked(c, apiKey, account, subscription, reqModel, err != nil, cyberBlockKeyMsg, clientRequestedUsageFields(c, channelMappingMsg, reqModel, ""), service.HashUsageRequestPayload(body))
 		forwardDurationMs := time.Since(forwardStart).Milliseconds()
@@ -1754,9 +1754,11 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 		return
 	}
 
-	// F5a: 握手层会话屏蔽检查。WS 握手无 body，显式标识仅来自握手 header
-	// （session_id / conversation_id）；无标识则放行，连接内仍有本地 flag 兜底。
-	cyberBlockKey := service.CyberSessionBlockKey(apiKey.ID, c, nil)
+	// F5a: 握手层会话屏蔽检查。WS 握手无 body，请求级信号仅来自握手 header
+	// （X-User-Id / session_id / conversation_id），与 (apiKey,user) 组合派生；
+	// 都缺失时退回纯 (apiKey,user)——握手不带标识不再等于绕过屏蔽。
+	// 连接内仍有本地 flag 兜底。
+	cyberBlockKey := service.CyberSessionBlockKey(apiKey.ID, apiKeyUserID(apiKey), c, nil)
 	if cyberBlockKey != "" && h.gatewayService.IsCyberSessionBlocked(c.Request.Context(), cyberBlockKey) {
 		writeCyberSessionBlockedWSError(c.Request.Context(), wsConn)
 		closeOpenAIClientWS(wsConn, coderws.StatusPolicyViolation, "session blocked by cyber-security policy")
@@ -2967,6 +2969,15 @@ func writeCyberSessionBlockedWSError(ctx context.Context, conn *coderws.Conn) {
 // within one request (e.g. in a retry/failover loop).
 const cyberPolicyRecordedKey = "ops_cyber_recorded"
 
+// apiKeyUserID 返回 API Key 归属用户 ID（缺失时为 0）。
+// 屏蔽标识的兜底层需要它：无显式会话标识时按 (apiKey,user) 粘住违规主体。
+func apiKeyUserID(apiKey *service.APIKey) int64 {
+	if apiKey == nil || apiKey.User == nil {
+		return 0
+	}
+	return apiKey.User.ID
+}
+
 // cyberPolicyOpsErrorMeta carries request-scoped fields captured outside the
 // async goroutine for building the cyber ops_error_logs entry.
 type cyberPolicyOpsErrorMeta struct {
@@ -3101,7 +3112,8 @@ func (h *OpenAIGatewayHandler) rejectIfCyberSessionBlocked(c *gin.Context, apiKe
 	if enabled, _ := h.gatewayService.CyberSessionBlockRuntime(c.Request.Context()); !enabled {
 		return false
 	}
-	key := service.CyberSessionBlockKey(apiKey.ID, c, body)
+	// StickyIdentity 保证 key 非空；保留空值兜底以防未来派生逻辑变化时静默误屏蔽。
+	key := service.CyberSessionBlockKey(apiKey.ID, apiKeyUserID(apiKey), c, body)
 	if key == "" {
 		return false
 	}

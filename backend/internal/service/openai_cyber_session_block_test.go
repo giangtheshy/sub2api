@@ -23,43 +23,64 @@ func newCyberBlockTestCtx(headers map[string]string, body string) (*gin.Context,
 	return c, []byte(body)
 }
 
-// TestCyberSessionBlockKey verifies F5a key derivation: explicit session signals
-// only (header session_id/conversation_id or body prompt_cache_key), apiKey
-// isolated, and EMPTY when no explicit signal (no content-derived fallback —
-// "不退化" decision).
+// TestCyberSessionBlockKey verifies the tiered key derivation (delegated to
+// StickyIdentity): X-User-Id → explicit session → (apiKey,user) fallback.
+// apiKey isolation is preserved; unlike the original F5a behaviour the key is
+// NEVER empty — a request without any explicit signal used to bypass blocking
+// entirely, which is exactly the hole this closes.
 func TestCyberSessionBlockKey(t *testing.T) {
 	c1, b1 := newCyberBlockTestCtx(map[string]string{"session_id": "sess-abc"}, `{}`)
-	k1 := CyberSessionBlockKey(101, c1, b1)
+	k1 := CyberSessionBlockKey(101, 0, c1, b1)
 	require.NotEmpty(t, k1)
 
 	// Same session, different apiKey → different key (isolation).
 	c2, b2 := newCyberBlockTestCtx(map[string]string{"session_id": "sess-abc"}, `{}`)
-	require.NotEqual(t, k1, CyberSessionBlockKey(202, c2, b2))
+	require.NotEqual(t, k1, CyberSessionBlockKey(202, 0, c2, b2))
 
 	// Same session + same apiKey → stable key.
 	c3, b3 := newCyberBlockTestCtx(map[string]string{"session_id": "sess-abc"}, `{}`)
-	require.Equal(t, k1, CyberSessionBlockKey(101, c3, b3))
+	require.Equal(t, k1, CyberSessionBlockKey(101, 0, c3, b3))
 
 	// prompt_cache_key in body counts as explicit.
 	c4, b4 := newCyberBlockTestCtx(nil, `{"prompt_cache_key":"pck-1"}`)
-	require.NotEmpty(t, CyberSessionBlockKey(101, c4, b4))
+	require.NotEmpty(t, CyberSessionBlockKey(101, 0, c4, b4))
 
-	// No explicit signal → empty key → caller must skip blocking entirely.
+	// No explicit signal → still a stable key from the (apiKey,user) tier.
 	c5, b5 := newCyberBlockTestCtx(nil, `{"input":"hello world"}`)
-	require.Empty(t, CyberSessionBlockKey(101, c5, b5))
+	k5 := CyberSessionBlockKey(101, 7, c5, b5)
+	require.NotEmpty(t, k5, "no-session requests must no longer bypass the block table")
+	c5b, b5b := newCyberBlockTestCtx(nil, `{"input":"different content"}`)
+	require.Equal(t, k5, CyberSessionBlockKey(101, 7, c5b, b5b))
+	require.NotEqual(t, k1, k5)
+
+	// X-User-Id 与 session 组合派生：多一个信号 → 另一把更细的 key。
+	c7, b7 := newCyberBlockTestCtx(map[string]string{"X-User-Id": "u9", "session_id": "sess-abc"}, `{}`)
+	k7 := CyberSessionBlockKey(101, 0, c7, b7)
+	require.NotEqual(t, k1, k7)
+	c7b, b7b := newCyberBlockTestCtx(map[string]string{"X-User-Id": "u9", "session_id": "sess-zzz"}, `{}`)
+	require.NotEqual(t, k7, CyberSessionBlockKey(101, 0, c7b, b7b),
+		"a block must stay scoped to one conversation of one end user")
+
+	// 转售隔离：同一把 Key 下不同终端客户绝不能共用屏蔽 key。
+	c8, b8 := newCyberBlockTestCtx(map[string]string{"X-User-Id": "cust-a"}, `{}`)
+	c9, b9 := newCyberBlockTestCtx(map[string]string{"X-User-Id": "cust-b"}, `{}`)
+	require.NotEqual(t, CyberSessionBlockKey(101, 7, c8, b8), CyberSessionBlockKey(101, 7, c9, b9),
+		"blocking one reseller customer must not block the whole reseller key")
 
 	// conversation_id header counts as explicit; key is stable and non-empty.
 	c6, b6 := newCyberBlockTestCtx(map[string]string{"conversation_id": "conv-xyz"}, `{}`)
-	k6 := CyberSessionBlockKey(101, c6, b6)
+	k6 := CyberSessionBlockKey(101, 0, c6, b6)
 	require.NotEmpty(t, k6)
 	c6b, b6b := newCyberBlockTestCtx(map[string]string{"conversation_id": "conv-xyz"}, `{}`)
-	require.Equal(t, k6, CyberSessionBlockKey(101, c6b, b6b), "conversation_id key must be stable")
+	require.Equal(t, k6, CyberSessionBlockKey(101, 0, c6b, b6b), "conversation_id key must be stable")
 }
 
 // --- fakes ---
 
 type fakeCyberBlockStore struct {
 	blocked map[string]bool
+	meta    map[string]CyberBlockMeta
+	listErr error
 }
 
 var _ CyberSessionBlockStore = (*fakeCyberBlockStore)(nil)
@@ -74,6 +95,36 @@ func (f *fakeCyberBlockStore) SetCyberSessionBlocked(_ context.Context, key stri
 
 func (f *fakeCyberBlockStore) IsCyberSessionBlocked(_ context.Context, key string) (bool, error) {
 	return f.blocked[key], nil
+}
+
+func (f *fakeCyberBlockStore) SetCyberSessionBlockedMeta(_ context.Context, key string, meta CyberBlockMeta, _ time.Duration) error {
+	if f.blocked == nil {
+		f.blocked = map[string]bool{}
+	}
+	if f.meta == nil {
+		f.meta = map[string]CyberBlockMeta{}
+	}
+	f.blocked[key] = true
+	meta.Key = key
+	f.meta[key] = meta
+	return nil
+}
+
+func (f *fakeCyberBlockStore) ListCyberSessionBlocks(_ context.Context) ([]CyberBlockMeta, error) {
+	if f.listErr != nil {
+		return nil, f.listErr
+	}
+	items := make([]CyberBlockMeta, 0, len(f.meta))
+	for _, m := range f.meta {
+		items = append(items, m)
+	}
+	return items, nil
+}
+
+func (f *fakeCyberBlockStore) DeleteCyberSessionBlock(_ context.Context, key string) error {
+	delete(f.blocked, key)
+	delete(f.meta, key)
+	return nil
 }
 
 // fakeSettingRepo is a minimal SettingRepository stub for unit tests.
@@ -153,6 +204,15 @@ func (c *comboCacheAndStore) SetCyberSessionBlocked(ctx context.Context, key str
 }
 func (c *comboCacheAndStore) IsCyberSessionBlocked(ctx context.Context, key string) (bool, error) {
 	return c.store.IsCyberSessionBlocked(ctx, key)
+}
+func (c *comboCacheAndStore) SetCyberSessionBlockedMeta(ctx context.Context, key string, meta CyberBlockMeta, ttl time.Duration) error {
+	return c.store.SetCyberSessionBlockedMeta(ctx, key, meta, ttl)
+}
+func (c *comboCacheAndStore) ListCyberSessionBlocks(ctx context.Context) ([]CyberBlockMeta, error) {
+	return c.store.ListCyberSessionBlocks(ctx)
+}
+func (c *comboCacheAndStore) DeleteCyberSessionBlock(ctx context.Context, key string) error {
+	return c.store.DeleteCyberSessionBlock(ctx, key)
 }
 
 // --- tests ---

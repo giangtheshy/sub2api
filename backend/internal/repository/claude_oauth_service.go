@@ -323,6 +323,45 @@ func (s *claudeOAuthService) RefreshToken(ctx context.Context, refreshToken, pro
 	return &tokenResp, nil
 }
 
+// BootstrapAccount enriches an OAuth access token with account identity via
+// Anthropic's claude_cli bootstrap endpoint. Best-effort: any non-200 or parse
+// failure returns an error the caller may ignore, never a partial identity.
+func (s *claudeOAuthService) BootstrapAccount(ctx context.Context, accessToken, proxyURL string) (*service.ClaudeBootstrapInfo, error) {
+	client, err := s.clientFactory(proxyURL)
+	if err != nil {
+		return nil, fmt.Errorf("create HTTP client: %w", err)
+	}
+
+	var body struct {
+		AccountUUID      string `json:"account_uuid"`
+		OrganizationUUID string `json:"organization_uuid"`
+		AccountEmail     string `json:"account_email"`
+		OrganizationName string `json:"organization_name"`
+		SubscriptionType string `json:"subscription_type"`
+	}
+
+	resp, err := client.R().
+		SetContext(ctx).
+		SetHeader("Authorization", "Bearer "+accessToken).
+		SetHeader("anthropic-version", "2023-06-01").
+		SetHeader("Content-Type", "application/json").
+		SetSuccessResult(&body).
+		Get("https://api.anthropic.com/api/claude_cli/bootstrap")
+	if err != nil {
+		return nil, fmt.Errorf("bootstrap request failed: %w", err)
+	}
+	if !resp.IsSuccessState() {
+		return nil, fmt.Errorf("bootstrap failed: status %d", resp.StatusCode)
+	}
+
+	return &service.ClaudeBootstrapInfo{
+		AccountUUID:      body.AccountUUID,
+		OrganizationUUID: body.OrganizationUUID,
+		EmailAddress:     body.AccountEmail,
+		SubscriptionType: body.SubscriptionType,
+	}, nil
+}
+
 func createReqClient(proxyURL string) (*req.Client, error) {
 	// 禁用 CookieJar，确保每次授权都是干净的会话
 	client := req.C().

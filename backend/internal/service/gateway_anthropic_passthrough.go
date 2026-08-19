@@ -547,6 +547,14 @@ func (s *GatewayService) handleStreamingResponseAnthropicAPIKeyPassthrough(
 					firstTokenMs = &ms
 				}
 				s.parseSSEUsagePassthrough(data, usage)
+				// 直通链路自带 SSE 循环，硬拒答检测必须在此单独接入，
+				// 否则 API Key 账号完全不受风控保护。
+				if DetectAnthropicRefusalSSEData(trimmed) {
+					markAnthropicRefusalForAccount(c, account, AnthropicRefusalMark{
+						Signal:         AnthropicRefusalSignalRefusal,
+						UpstreamStatus: http.StatusOK,
+					})
+				}
 			} else {
 				trimmed := strings.TrimSpace(line)
 				if strings.HasPrefix(trimmed, "event:") && anthropicStreamEventIsTerminal(strings.TrimSpace(strings.TrimPrefix(trimmed, "event:")), "") {
@@ -794,6 +802,15 @@ func (s *GatewayService) handleNonStreamingResponseAnthropicAPIKeyPassthrough(
 		observer = beginUpstreamResponseModelObservation(c)
 	}
 	observer.ObserveAnthropic(body)
+
+	// 硬拒答（非流式）：顶层 stop_reason=="refusal"，响应照常透传。
+	if ok, detail := DetectAnthropicRefusalJSON(body); ok {
+		markAnthropicRefusalForAccount(c, account, AnthropicRefusalMark{
+			Signal:         AnthropicRefusalSignalRefusal,
+			Message:        detail,
+			UpstreamStatus: resp.StatusCode,
+		})
+	}
 
 	if resp.StatusCode >= http.StatusOK && resp.StatusCode < http.StatusMultipleChoices {
 		var raw json.RawMessage

@@ -169,6 +169,9 @@ func registerContentModerationRoutes(admin *gin.RouterGroup, h *handler.Handlers
 		risk.POST("/users/:user_id/unban", h.Admin.ContentModeration.UnbanUser)
 		risk.DELETE("/hashes", h.Admin.ContentModeration.DeleteFlaggedHash)
 		risk.DELETE("/hashes/all", h.Admin.ContentModeration.ClearFlaggedHashes)
+		// 会话屏蔽管理：列出当前被本地拦截的标识、手动解除。
+		risk.GET("/blocks", h.Admin.ContentModeration.ListBlocks)
+		risk.DELETE("/blocks/:key", h.Admin.ContentModeration.Unblock)
 	}
 }
 
@@ -423,6 +426,7 @@ func registerAccountRoutes(admin *gin.RouterGroup, h *handler.Handlers, stepUpAu
 
 		// Claude.ai cookie account (no OAuth grant; works with stale sessions)
 		accounts.POST("/cookie-validate", h.Admin.OAuth.ValidateCookieAccount)
+		accounts.POST("/import-oauth-credentials", h.Admin.OAuth.ImportOAuthCredentials)
 	}
 }
 

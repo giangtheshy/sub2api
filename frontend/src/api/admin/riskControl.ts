@@ -234,6 +234,21 @@ export interface ClearFlaggedHashesResponse {
   deleted: number
 }
 
+/** 一条仍然生效的会话屏蔽记录。masked 是标识哈希的短前缀，绝不含原始 user/session id。 */
+export interface CyberBlockItem {
+  key: string
+  kind: string
+  masked: string
+  signal: string
+  blockedAt: string
+  expiresAt: string
+}
+
+export interface UnblockResponse {
+  key: string
+  unblocked: boolean
+}
+
 export async function getConfig(): Promise<ContentModerationConfig> {
   const { data } = await apiClient.get<ContentModerationConfig>('/admin/risk-control/config')
   return data
@@ -286,6 +301,18 @@ export async function clearFlaggedHashes(): Promise<ClearFlaggedHashesResponse> 
   return data
 }
 
+export async function listBlocks(): Promise<CyberBlockItem[]> {
+  const { data } = await apiClient.get<CyberBlockItem[]>('/admin/risk-control/blocks')
+  return data ?? []
+}
+
+export async function unblock(key: string): Promise<UnblockResponse> {
+  const { data } = await apiClient.delete<UnblockResponse>(
+    `/admin/risk-control/blocks/${encodeURIComponent(key)}`
+  )
+  return data
+}
+
 export const riskControlAPI = {
   getConfig,
   updateConfig,
@@ -295,6 +322,8 @@ export const riskControlAPI = {
   unbanUser,
   deleteFlaggedHash,
   clearFlaggedHashes,
+  listBlocks,
+  unblock,
 }
 
 export default riskControlAPI

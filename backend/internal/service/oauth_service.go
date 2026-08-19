@@ -44,6 +44,19 @@ type ClaudeOAuthClient interface {
 	GetAuthorizationCode(ctx context.Context, cookieHeader, orgUUID, scope, codeChallenge, state, proxyURL string) (string, error)
 	ExchangeCodeForToken(ctx context.Context, code, codeVerifier, state, proxyURL string, isSetupToken bool) (*oauth.TokenResponse, error)
 	RefreshToken(ctx context.Context, refreshToken, proxyURL string) (*oauth.TokenResponse, error)
+	// BootstrapAccount enriches an OAuth access token with account identity
+	// (org UUID, account UUID, email) via Anthropic's claude_cli bootstrap
+	// endpoint. It is best-effort: callers treat a nil result as "unknown"
+	// rather than a failure, so importing a valid token never blocks on it.
+	BootstrapAccount(ctx context.Context, accessToken, proxyURL string) (*ClaudeBootstrapInfo, error)
+}
+
+// ClaudeBootstrapInfo is the account identity Anthropic returns for an access token.
+type ClaudeBootstrapInfo struct {
+	AccountUUID      string
+	OrganizationUUID string
+	EmailAddress     string
+	SubscriptionType string
 }
 
 // OAuthService handles OAuth authentication flows
@@ -175,6 +188,65 @@ func (s *OAuthService) ExchangeCode(ctx context.Context, input *ExchangeCodeInpu
 
 	// Delete session after successful exchange
 	s.sessionStore.Delete(input.SessionID)
+
+	return tokenInfo, nil
+}
+
+// ImportOAuthCredentialsInput carries a pasted Claude Code credential file.
+type ImportOAuthCredentialsInput struct {
+	// Raw is the credential blob: either {"claudeAiOauth":{...}} as written by
+	// Claude Code, or a bare {...} object with the same fields.
+	Raw     string
+	ProxyID *int64
+}
+
+// ImportOAuthCredentials imports an already-issued OAuth credential bundle into
+// a TokenInfo usable by the account-creation flow.
+//
+// This does not contact any authorization endpoint and mints nothing: it accepts
+// a credential the operator already holds (from a genuine Claude Code login) and
+// normalizes it into the same shape ExchangeCode returns, so the rest of the
+// OAuth account pipeline is reused unchanged. Account identity (org/email) is
+// enriched best-effort via the bootstrap endpoint and never blocks the import.
+func (s *OAuthService) ImportOAuthCredentials(ctx context.Context, input *ImportOAuthCredentialsInput) (*TokenInfo, error) {
+	parsed, err := oauth.ParseClaudeOAuthCredentials(input.Raw)
+	if err != nil {
+		return nil, fmt.Errorf("invalid OAuth credentials: %w", err)
+	}
+
+	var proxyURL string
+	if input.ProxyID != nil {
+		proxy, errProxy := s.proxyRepo.GetByID(ctx, *input.ProxyID)
+		if errProxy == nil && proxy != nil {
+			proxyURL = proxy.URL()
+		}
+	}
+
+	// ExpiresIn is derived from the file's expiry relative to now. A past or
+	// unknown expiry yields a non-positive value; the refresh path handles that
+	// by refreshing on first use.
+	expiresIn := parsed.ExpiresAt - time.Now().Unix()
+
+	tokenInfo := &TokenInfo{
+		AccessToken:  parsed.AccessToken,
+		TokenType:    "Bearer",
+		ExpiresIn:    expiresIn,
+		ExpiresAt:    parsed.ExpiresAt,
+		RefreshToken: parsed.RefreshToken,
+		Scope:        parsed.Scope,
+	}
+
+	// Best-effort identity enrichment. A failure here (expired access token,
+	// network error, endpoint change) must not fail the import — the refresh
+	// token can still mint a fresh access token later, and identity fields are
+	// optional on the account.
+	if info, errBoot := s.oauthClient.BootstrapAccount(ctx, parsed.AccessToken, proxyURL); errBoot == nil && info != nil {
+		tokenInfo.OrgUUID = info.OrganizationUUID
+		tokenInfo.AccountUUID = info.AccountUUID
+		tokenInfo.EmailAddress = info.EmailAddress
+	} else if errBoot != nil {
+		log.Printf("[OAuth] Import bootstrap enrichment skipped: %v", errBoot)
+	}
 
 	return tokenInfo, nil
 }

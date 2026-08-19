@@ -214,6 +214,17 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 		return
 	}
 
+	// 会话屏蔽（开关默认关）：曾触发上游硬阻断的主体在 TTL 内本地拒绝，
+	// 不再拿账号池去撞上游风控。放在并发槽位之前——被屏蔽的请求不该占配额和队列。
+	cyberBlockMeta, cyberRejected := h.rejectIfCyberSessionBlockedNative(c, apiKey, body, reqModel)
+	if cyberRejected {
+		return
+	}
+	// 收尾统一记录硬拒答证据。Messages 有多条返回路径（成功、上游错误、failover 用尽、
+	// 客户端断开），用 defer 保证任何一条都会把证据落进风控中心并写屏蔽表。
+	// 账号信息由服务层打标记时带入，这里无需再传。
+	defer h.recordAnthropicRefusalIfMarked(c, apiKey, nil, reqModel, cyberBlockMeta)
+
 	// Track if we've started streaming (for error handling)
 	streamStarted := false
 

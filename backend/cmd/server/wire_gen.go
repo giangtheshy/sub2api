@@ -263,7 +263,7 @@ func initializeApplication(buildInfo handler.BuildInfo) (*Application, error) {
 	contentModerationRepository := repository.NewContentModerationRepository(db)
 	contentModerationHashCache := repository.NewContentModerationHashCache(redisClient)
 	contentModerationService := service.NewContentModerationService(settingRepository, contentModerationRepository, contentModerationHashCache, groupRepository, userRepository, proxyRepository, apiKeyAuthCacheInvalidator, emailService)
-	contentModerationHandler := admin.NewContentModerationHandler(contentModerationService)
+	contentModerationHandler := admin.NewContentModerationHandler(contentModerationService, openAIGatewayService)
 	configManager := securityaudit.NewConfigManager(db, settingRepository, redisClient, secretEncryptor, configConfig)
 	postgreSQLRepository := securityaudit.NewPostgreSQLRepository(db)
 	redisPayloadStore := securityaudit.NewRedisPayloadStore(redisClient)

@@ -1049,6 +1049,16 @@ export default {
           '保留 cookie，像浏览器一样直连 claude.ai。即使会话过旧无法 OAuth 也可用。token 数为估算值，非上游计量。',
         cookieFileTooLarge: '文件过大，不像是 cookie 导出（上限 512 KB）。',
         cookieFileReadFailed: '无法读取该文件，请改为直接粘贴内容。',
+        importCredentials: '导入 OAuth 凭证',
+        importCredentialsDesc:
+          '粘贴或上传 Claude Code 的凭证文件（包含 "claudeAiOauth"，内有 accessToken 与 refreshToken 的 JSON）。将按原样导入并创建一个普通 OAuth 账号——不铸造任何令牌，也不执行授权步骤。',
+        importCredentialsInputLabel: 'claudeAiOauth JSON',
+        importCredentialsUpload: '选择文件',
+        importCredentialsPlaceholder:
+          '在此粘贴 claudeAiOauth JSON（包含 accessToken 与 refreshToken 的对象）……',
+        importCredentialsHint:
+          '支持带包装的 claudeAiOauth 文件，或字段相同的裸对象。一个文件 = 一个账号。',
+        importCredentialsSubmit: '导入并创建账号',
         cookieSessionStale:
           'Cookie 有效，但 claude.ai 会话过旧，Anthropic 拒绝授予 OAuth 权限。请退出并重新登录 claude.ai，立即重新导出 cookies 后再试。',
         cookieInvalid: 'claude.ai 拒绝了该 cookie，请重新登录并导出新的 cookie。',
