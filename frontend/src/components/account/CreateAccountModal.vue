@@ -5374,8 +5374,30 @@ const createAccountAndFinish = async (
   // response, so they need a name even when the operator left the field blank.
   options: { name?: string } = {}
 ) => {
-  if (!applyTempUnschedConfig(credentials)) {
+  const payload = buildAccountPayload(platform, type, credentials, extra, options)
+  if (!payload) {
     return
+  }
+  await doCreateAccount(payload)
+}
+
+/**
+ * Assembles the create-account payload from the form, applying every switch the
+ * panel offers. Returns null when the form is invalid (the caller stops).
+ *
+ * Split out of createAccountAndFinish so batch imports can build one payload per
+ * credential and submit them in a loop without duplicating this logic — which is
+ * where per-path drift comes from.
+ */
+const buildAccountPayload = (
+  platform: AccountPlatform,
+  type: AccountType,
+  credentials: Record<string, unknown>,
+  extra?: Record<string, unknown>,
+  options: { name?: string } = {}
+): CreateAccountRequest | null => {
+  if (!applyTempUnschedConfig(credentials)) {
+    return null
   }
   // 所有创建路径（OAuth / apikey / bedrock / upstream / cookie …）都汇入这里，
   // 因此排除列表只在此处注入一次，而不是散落到九个 model_mapping 写入点——
@@ -5435,7 +5457,7 @@ const createAccountAndFinish = async (
       delete credentials.model_mapping
     }
   }
-  await doCreateAccount({
+  return {
     name: options.name || form.name,
     notes: form.notes,
     platform,
@@ -5453,7 +5475,7 @@ const createAccountAndFinish = async (
     // 非 apikey 类型（bedrock/oauth）不传，后端不动作。
     upstream_billing_probe_enabled: type === 'apikey' ? upstreamBillingAutoProbeEnabled.value : undefined,
     auto_pause_on_expired: autoPauseOnExpired.value
-  })
+  }
 }
 
 // Grok 手动 RT 批量验证和创建
@@ -6505,44 +6527,126 @@ const handleCreateCookieAccount = async (content: string) => {
 }
 
 /**
- * Imports an already-issued Claude OAuth credential file (claudeAiOauth JSON)
- * and creates a normal OAuth account from it.
+ * Imports already-issued Claude OAuth credential files (claudeAiOauth JSON) and
+ * creates one normal OAuth account per credential.
  *
  * This mirrors the cookie-auth success path exactly — same TokenInfo shape, same
- * extra-building, same `type: 'oauth'` create — except the token comes from a
- * credential the operator already holds instead of a cookie exchange. No
+ * extra-building, same `type: 'oauth'` create — except the tokens come from
+ * credentials the operator already holds instead of a cookie exchange. No
  * authorization endpoint is contacted.
+ *
+ * The blob may hold several credentials (JSON array, one per line, or
+ * concatenated); the backend splits them and returns one TokenInfo each.
  */
 const handleImportOAuthCredentials = async (content: string) => {
   oauth.loading.value = true
   oauth.error.value = ''
 
   try {
-    const tokenInfo = await adminAPI.accounts.importOAuthCredentials({
+    const tokenInfos = await adminAPI.accounts.importOAuthCredentials({
       credentials: content.trim(),
       ...(form.proxy_id ? { proxy_id: form.proxy_id } : {})
     })
 
-    const baseExtra = oauth.buildExtraInfo(tokenInfo as Record<string, unknown>) || {}
-    const extra = applyAccountControlExtras({ ...baseExtra })
+    if (!tokenInfos.length) {
+      oauth.error.value = t('admin.accounts.oauth.importCredentialsEmpty')
+      return
+    }
 
-    const credentials: Record<string, unknown> = { ...tokenInfo }
-    applyInterceptWarmup(credentials, interceptWarmupRequests.value, 'create')
-
-    const name =
-      form.name?.trim() ||
-      (tokenInfo.email_address as string | undefined) ||
-      'claude-oauth'
-
-    // Routed through createAccountAndFinish rather than a bespoke create call so
-    // the imported account picks up temp-unschedulable rules, excluded models and
-    // the mixed-channel guard exactly like an authorization-code account does.
-    await createAccountAndFinish('anthropic', 'oauth', credentials, extra, { name })
+    // The mixed-channel risk depends on platform + groups, which are identical
+    // for every account in the batch, so one confirmation covers them all.
+    const canContinue = await ensureAntigravityMixedChannelConfirmed(async () => {
+      await createImportedOAuthAccounts(tokenInfos)
+    })
+    if (!canContinue) {
+      return
+    }
+    await createImportedOAuthAccounts(tokenInfos)
   } catch (error: unknown) {
     oauth.error.value = resolveAuthErrorMessage(error, t, 'admin.accounts.oauth.authFailed')
   } finally {
     oauth.loading.value = false
   }
+}
+
+/**
+ * Creates one OAuth account per imported credential, reporting per-credential
+ * failures instead of letting the first one abort the rest — a batch of twenty
+ * where number three is stale should still yield nineteen accounts.
+ */
+const createImportedOAuthAccounts = async (tokenInfos: Record<string, unknown>[]) => {
+  const usedNames = new Set<string>()
+  let successCount = 0
+  const errors: string[] = []
+
+  for (let i = 0; i < tokenInfos.length; i++) {
+    const tokenInfo = tokenInfos[i]
+    const extra = applyAccountControlExtras({ ...(oauth.buildExtraInfo(tokenInfo) || {}) })
+    const credentials: Record<string, unknown> = { ...tokenInfo }
+    applyInterceptWarmup(credentials, interceptWarmupRequests.value, 'create')
+
+    const payload = buildAccountPayload('anthropic', 'oauth', credentials, extra, {
+      name: resolveImportedAccountName(tokenInfo, i, tokenInfos.length, usedNames)
+    })
+    if (!payload) {
+      return
+    }
+
+    try {
+      await adminAPI.accounts.create(withAntigravityConfirmFlag(payload))
+      successCount++
+    } catch (error: unknown) {
+      const detail = resolveAuthErrorMessage(error, t, 'admin.accounts.failedToCreate')
+      errors.push(
+        tokenInfos.length > 1
+          ? t('admin.accounts.oauth.keyAuthFailed', { index: i + 1, error: detail })
+          : detail
+      )
+    }
+  }
+
+  if (successCount > 0) {
+    appStore.showSuccess(t('admin.accounts.oauth.successCreated', { count: successCount }))
+    emit('created')
+    if (errors.length === 0) {
+      handleClose()
+    }
+  }
+
+  if (errors.length > 0) {
+    oauth.error.value = errors.join('\n')
+  }
+}
+
+/**
+ * Picks a unique account name for an imported credential.
+ *
+ * The operator's name wins when given; otherwise the upstream email identifies
+ * the account. Either way the name is suffixed when it would collide, so a batch
+ * never produces several accounts that are indistinguishable in the list.
+ */
+const resolveImportedAccountName = (
+  tokenInfo: Record<string, unknown>,
+  index: number,
+  total: number,
+  usedNames: Set<string>
+): string => {
+  const entered = form.name?.trim()
+  const email = typeof tokenInfo.email_address === 'string' ? tokenInfo.email_address : ''
+  const base = entered || email || 'claude-oauth'
+
+  let name = entered && total > 1 ? `${base} #${index + 1}` : base
+  if (usedNames.has(name)) {
+    name = `${base} #${index + 1}`
+  }
+  let suffix = 2
+  while (usedNames.has(name)) {
+    name = `${base} #${index + 1} (${suffix})`
+    suffix++
+  }
+
+  usedNames.add(name)
+  return name
 }
 
 const handleCookieAuth = async (

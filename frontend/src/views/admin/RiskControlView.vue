@@ -281,6 +281,55 @@
           </div>
         </div>
 
+        <div v-if="riskControlEnabled" class="card">
+          <div class="flex flex-col gap-3 border-b border-gray-100 px-6 py-4 dark:border-dark-700 lg:flex-row lg:items-center lg:justify-between">
+            <div>
+              <h2 class="text-lg font-semibold text-gray-900 dark:text-white">{{ t('admin.riskControl.endUserBans.title') }}</h2>
+              <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">{{ t('admin.riskControl.endUserBans.hint') }}</p>
+            </div>
+            <button type="button" class="btn btn-secondary inline-flex items-center gap-2" :disabled="endUserBansLoading" @click="loadEndUserBans">
+              <Icon name="refresh" size="sm" :class="endUserBansLoading ? 'animate-spin' : ''" />
+              {{ t('admin.riskControl.refresh') }}
+            </button>
+          </div>
+
+          <div v-if="endUserBans.length === 0" class="px-6 py-8 text-center text-sm text-gray-500 dark:text-gray-400">
+            {{ t('admin.riskControl.endUserBans.empty') }}
+          </div>
+          <div v-else class="overflow-x-auto">
+            <table class="min-w-full divide-y divide-gray-200 dark:divide-dark-700">
+              <thead class="bg-gray-50 dark:bg-dark-800">
+                <tr>
+                  <th class="px-5 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500 dark:text-gray-400">{{ t('admin.riskControl.endUserBans.identity') }}</th>
+                  <th class="px-5 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500 dark:text-gray-400">{{ t('admin.riskControl.endUserBans.violationCount') }}</th>
+                  <th class="px-5 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500 dark:text-gray-400">{{ t('admin.riskControl.endUserBans.reason') }}</th>
+                  <th class="px-5 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500 dark:text-gray-400">{{ t('admin.riskControl.endUserBans.bannedAt') }}</th>
+                  <th class="px-5 py-3 text-right text-xs font-medium uppercase tracking-wider text-gray-500 dark:text-gray-400">{{ t('admin.riskControl.endUserBans.actions') }}</th>
+                </tr>
+              </thead>
+              <tbody class="divide-y divide-gray-100 dark:divide-dark-700">
+                <tr v-for="item in endUserBans" :key="item.identity">
+                  <td class="px-5 py-3 font-mono text-sm text-gray-900 dark:text-white">{{ item.masked || item.identity.slice(0, 12) }}</td>
+                  <td class="px-5 py-3 text-sm text-gray-600 dark:text-gray-300">{{ item.violationCount }}</td>
+                  <td class="px-5 py-3 text-sm text-gray-600 dark:text-gray-300">{{ item.reason || '-' }}</td>
+                  <td class="px-5 py-3 text-sm text-gray-500 dark:text-gray-400">{{ formatBlockTime(item.bannedAt) }}</td>
+                  <td class="px-5 py-3 text-right">
+                    <button
+                      type="button"
+                      class="btn btn-secondary inline-flex items-center gap-2 text-red-600 hover:text-red-700 dark:text-red-300"
+                      :disabled="unbanningEndUserIdentity === item.identity"
+                      @click="unbanEndUserIdentity(item)"
+                    >
+                      <Icon name="trash" size="sm" :class="unbanningEndUserIdentity === item.identity ? 'animate-pulse' : ''" />
+                      {{ t('admin.riskControl.endUserBans.unban') }}
+                    </button>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+
         <div class="card">
           <div class="flex flex-col gap-4 border-b border-gray-100 px-6 py-4 dark:border-dark-700">
             <div class="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
@@ -955,6 +1004,18 @@
                 <label class="input-label">{{ t('admin.riskControl.violationWindowHours') }}</label>
                 <input v-model.number="configForm.violation_window_hours" type="number" min="1" max="8760" class="input" />
               </div>
+              <div class="flex items-center justify-between rounded-lg border border-gray-100 p-4 dark:border-dark-700 lg:col-span-2">
+                <div>
+                  <p class="text-sm font-medium text-gray-900 dark:text-white">{{ t('admin.riskControl.endUserBanEnabled') }}</p>
+                  <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">{{ t('admin.riskControl.endUserBanEnabledHint') }}</p>
+                </div>
+                <Toggle v-model="configForm.end_user_ban_enabled" />
+              </div>
+              <div>
+                <label class="input-label">{{ t('admin.riskControl.endUserBanThreshold') }}</label>
+                <input v-model.number="configForm.end_user_ban_threshold" type="number" min="1" max="1000" class="input" />
+                <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">{{ t('admin.riskControl.endUserBanThresholdHint') }}</p>
+              </div>
             </div>
           </div>
 
@@ -1184,6 +1245,7 @@ import { adminAPI } from '@/api/admin'
 import type {
   ContentModerationAPIKeyLoad,
   CyberBlockItem,
+  EndUserBanItem,
   ContentModerationAPIKeyStatus,
   ContentModerationConfig,
   ContentModerationLog,
@@ -1260,6 +1322,9 @@ const hashActionLoading = ref(false)
 const blocksLoading = ref(false)
 const blocks = ref<CyberBlockItem[]>([])
 const unblockingKey = ref<string | null>(null)
+const endUserBansLoading = ref(false)
+const endUserBans = ref<EndUserBanItem[]>([])
+const unbanningEndUserIdentity = ref<string | null>(null)
 const unbanningUserID = ref<number | null>(null)
 const settingsOpen = ref(false)
 const activeSettingsTab = ref<SettingsTab>('basic')
@@ -1307,6 +1372,10 @@ const configForm = reactive({
   cyber_policy_exclude_from_ban_count: false,
   ban_threshold: 10,
   violation_window_hours: 720,
+  // 默认关闭：与 auto_ban_enabled 不同，是否让上游看到 header 是需要管理员
+  // 主动决定的动作。阈值应远低于账号层 ban_threshold——精准封到人。
+  end_user_ban_enabled: false,
+  end_user_ban_threshold: 3,
   hit_retention_days: 180,
   non_hit_retention_days: 3,
   pre_hash_check_enabled: false,
@@ -1785,6 +1854,8 @@ function applyConfig(config: ContentModerationConfig) {
   configForm.cyber_policy_exclude_from_ban_count = config.cyber_policy_exclude_from_ban_count ?? false
   configForm.ban_threshold = config.ban_threshold || 10
   configForm.violation_window_hours = config.violation_window_hours || 720
+  configForm.end_user_ban_enabled = config.end_user_ban_enabled ?? false
+  configForm.end_user_ban_threshold = config.end_user_ban_threshold || 3
   configForm.hit_retention_days = config.hit_retention_days || 180
   configForm.non_hit_retention_days = Math.min(Math.max(config.non_hit_retention_days || 3, 1), 3)
   configForm.pre_hash_check_enabled = config.pre_hash_check_enabled ?? false
@@ -1871,6 +1942,8 @@ async function saveConfig() {
       cyber_policy_exclude_from_ban_count: configForm.cyber_policy_exclude_from_ban_count,
       ban_threshold: Number(configForm.ban_threshold) || 10,
       violation_window_hours: Number(configForm.violation_window_hours) || 720,
+      end_user_ban_enabled: configForm.end_user_ban_enabled,
+      end_user_ban_threshold: Number(configForm.end_user_ban_threshold) || 3,
       hit_retention_days: Number(configForm.hit_retention_days) || 180,
       non_hit_retention_days: Math.min(Math.max(Number(configForm.non_hit_retention_days) || 3, 1), 3),
       pre_hash_check_enabled: configForm.pre_hash_check_enabled,
@@ -2471,9 +2544,34 @@ async function unblockIdentity(item: CyberBlockItem) {
   }
 }
 
+async function loadEndUserBans() {
+  endUserBansLoading.value = true
+  try {
+    endUserBans.value = await adminAPI.riskControl.listEndUserBans()
+  } catch (err) {
+    appStore.showError(extractApiErrorMessage(err, t('admin.riskControl.endUserBans.loadFailed')))
+  } finally {
+    endUserBansLoading.value = false
+  }
+}
+
+async function unbanEndUserIdentity(item: EndUserBanItem) {
+  unbanningEndUserIdentity.value = item.identity
+  try {
+    await adminAPI.riskControl.unbanEndUser(item.identity)
+    endUserBans.value = endUserBans.value.filter((b) => b.identity !== item.identity)
+    appStore.showSuccess(t('admin.riskControl.endUserBans.unbanSuccess'))
+  } catch (err) {
+    appStore.showError(extractApiErrorMessage(err, t('admin.riskControl.endUserBans.unbanFailed')))
+  } finally {
+    unbanningEndUserIdentity.value = null
+  }
+}
+
 onMounted(() => {
   void loadAll()
   void loadBlocks()
+  void loadEndUserBans()
   statusTimer = window.setInterval(() => {
     void loadStatus(true)
   }, 15000)

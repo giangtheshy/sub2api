@@ -23,7 +23,7 @@ func TestRecordAnthropicRefusalIfMarked_NoMark(t *testing.T) {
 	h := &GatewayHandler{}
 
 	require.NotPanics(t, func() {
-		h.recordAnthropicRefusalIfMarked(c, nil, nil, "claude-sonnet-4-6", service.CyberBlockMeta{})
+		h.recordAnthropicRefusalIfMarked(c, nil, nil, "claude-sonnet-4-6", service.CyberBlockMeta{}, "")
 	})
 	require.False(t, c.GetBool(anthropicRefusalRecordedKey),
 		"guard must stay false when there is no hard-signal mark")
@@ -40,12 +40,12 @@ func TestRecordAnthropicRefusalIfMarked_WithMarkIsIdempotent(t *testing.T) {
 
 	blockMeta := service.CyberBlockMeta{Key: "deadbeef", Kind: service.StickyIdentityKindXUserID, Masked: "deadbe"}
 	require.NotPanics(t, func() {
-		h.recordAnthropicRefusalIfMarked(c, nil, nil, "claude-sonnet-4-6", blockMeta)
+		h.recordAnthropicRefusalIfMarked(c, nil, nil, "claude-sonnet-4-6", blockMeta, "")
 	})
 	require.True(t, c.GetBool(anthropicRefusalRecordedKey))
 
 	require.NotPanics(t, func() {
-		h.recordAnthropicRefusalIfMarked(c, nil, nil, "claude-sonnet-4-6", blockMeta)
+		h.recordAnthropicRefusalIfMarked(c, nil, nil, "claude-sonnet-4-6", blockMeta, "")
 	})
 	require.True(t, c.GetBool(anthropicRefusalRecordedKey))
 }
@@ -67,7 +67,7 @@ func TestBuildAnthropicRefusalRecordInput(t *testing.T) {
 			AccountID:      5,
 			AccountName:    "acc5",
 		},
-		apiKey, "req-1", "/v1/messages", "claude-sonnet-4-6",
+		apiKey, "req-1", "/v1/messages", "claude-sonnet-4-6", "",
 	)
 	require.Equal(t, "anthropic_refusal", in.Category)
 	require.Equal(t, "anthropic", in.Provider)
@@ -83,7 +83,7 @@ func TestBuildAnthropicRefusalRecordInput(t *testing.T) {
 			Message:        "org blocked",
 			UpstreamStatus: 403,
 		},
-		apiKey, "req-2", "/v1/messages", "claude-sonnet-4-6",
+		apiKey, "req-2", "/v1/messages", "claude-sonnet-4-6", "",
 	)
 	require.Equal(t, "anthropic_permission_error", in2.Category)
 	require.Equal(t, "org blocked", in2.UpstreamMessage)

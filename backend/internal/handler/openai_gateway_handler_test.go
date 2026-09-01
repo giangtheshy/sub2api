@@ -1247,6 +1247,10 @@ func (r *contentModerationHandlerTestRepo) CountFlaggedByUserSince(ctx context.C
 	return 0, nil
 }
 
+func (r *contentModerationHandlerTestRepo) CountFlaggedByEndUserSince(ctx context.Context, identity string, since time.Time, excludeCyberPolicy bool) (int, error) {
+	return 0, nil
+}
+
 func (r *contentModerationHandlerTestRepo) CleanupExpiredLogs(ctx context.Context, hitBefore time.Time, nonHitBefore time.Time) (*service.ContentModerationCleanupResult, error) {
 	return &service.ContentModerationCleanupResult{}, nil
 }
@@ -1285,6 +1289,7 @@ func TestOpenAIResponsesWebSocket_ContentModerationBlocksFirstFrame(t *testing.T
 	moderationSvc := service.NewContentModerationService(
 		settingRepo,
 		repo,
+		nil,
 		nil,
 		nil,
 		nil,

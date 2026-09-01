@@ -215,15 +215,16 @@ export function useAccountOAuth() {
       .filter((k) => k)
   }
 
-  // Import an already-issued OAuth credential file (claudeAiOauth JSON).
+  // Import already-issued OAuth credential files (claudeAiOauth JSON).
   //
-  // Unlike cookieAuth, this mints nothing: it hands the backend a credential the
-  // operator already holds and gets back the same TokenInfo shape, so the account
-  // is created through the normal OAuth pipeline with a working refresh token.
+  // Unlike cookieAuth, this mints nothing: it hands the backend credentials the
+  // operator already holds and gets back the same TokenInfo shape, so accounts
+  // are created through the normal OAuth pipeline with working refresh tokens.
+  // Several credentials may be pasted at once; the result keeps their order.
   const importOAuthCredentials = async (
     credentials: string,
     proxyId?: number | null
-  ): Promise<TokenInfo | null> => {
+  ): Promise<TokenInfo[] | null> => {
     if (!credentials.trim()) {
       error.value = 'Please paste the OAuth credentials'
       return null
@@ -234,11 +235,11 @@ export function useAccountOAuth() {
 
     try {
       const proxyConfig = proxyId ? { proxy_id: proxyId } : {}
-      const tokenInfo = await adminAPI.accounts.importOAuthCredentials({
+      const tokenInfos = await adminAPI.accounts.importOAuthCredentials({
         credentials: credentials.trim(),
         ...proxyConfig
       })
-      return tokenInfo as TokenInfo
+      return tokenInfos as TokenInfo[]
     } catch (err: any) {
       error.value =
         err.response?.data?.detail || err.message || 'Failed to import OAuth credentials'

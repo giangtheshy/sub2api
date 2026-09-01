@@ -2,7 +2,9 @@ package oauth
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"strings"
 	"time"
 )
@@ -43,20 +45,100 @@ func ParseClaudeOAuthCredentials(raw string) (*ParsedOAuthCredentials, error) {
 	if trimmed == "" {
 		return nil, fmt.Errorf("empty credential input")
 	}
+	return parseOneCredential([]byte(trimmed))
+}
 
+// ParseClaudeOAuthCredentialsMany parses a blob holding one or more credentials
+// so an operator can import a whole batch of accounts in a single paste. It
+// accepts, in addition to everything ParseClaudeOAuthCredentials takes:
+//
+//   - a JSON array of credentials (wrapped or bare)
+//   - several objects one after another, whether newline-separated (JSONL) or
+//     simply concatenated
+//
+// Duplicates are collapsed on the refresh token: the same account pasted twice
+// must not become two competing accounts sharing one upstream identity.
+//
+// A malformed or incomplete entry fails the whole call and names its position.
+// Skipping it silently would create fewer accounts than the operator pasted
+// without saying which one went missing.
+func ParseClaudeOAuthCredentialsMany(raw string) ([]*ParsedOAuthCredentials, error) {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return nil, fmt.Errorf("empty credential input")
+	}
+
+	entries, err := splitCredentialEntries(trimmed)
+	if err != nil {
+		return nil, err
+	}
+	if len(entries) == 0 {
+		return nil, fmt.Errorf("no credential object found")
+	}
+
+	parsed := make([]*ParsedOAuthCredentials, 0, len(entries))
+	seenRefreshTokens := make(map[string]struct{}, len(entries))
+	for i, entry := range entries {
+		credentials, err := parseOneCredential(entry)
+		if err != nil {
+			// Positions are 1-based and only reported when the blob held more than
+			// one entry, so a single bad paste keeps the plain message.
+			if len(entries) == 1 {
+				return nil, err
+			}
+			return nil, fmt.Errorf("credential #%d: %w", i+1, err)
+		}
+		if _, duplicate := seenRefreshTokens[credentials.RefreshToken]; duplicate {
+			continue
+		}
+		seenRefreshTokens[credentials.RefreshToken] = struct{}{}
+		parsed = append(parsed, credentials)
+	}
+
+	return parsed, nil
+}
+
+// splitCredentialEntries breaks the blob into individual JSON values. A leading
+// "[" is decoded as an array; otherwise the input is streamed so consecutive
+// objects work with or without separators between them.
+func splitCredentialEntries(trimmed string) ([]json.RawMessage, error) {
+	if strings.HasPrefix(trimmed, "[") {
+		var array []json.RawMessage
+		if err := json.Unmarshal([]byte(trimmed), &array); err != nil {
+			return nil, fmt.Errorf("invalid credential JSON: %w", err)
+		}
+		return array, nil
+	}
+
+	decoder := json.NewDecoder(strings.NewReader(trimmed))
+	entries := make([]json.RawMessage, 0, 4)
+	for {
+		var entry json.RawMessage
+		if err := decoder.Decode(&entry); err != nil {
+			if errors.Is(err, io.EOF) {
+				break
+			}
+			return nil, fmt.Errorf("invalid credential JSON: %w", err)
+		}
+		entries = append(entries, entry)
+	}
+	return entries, nil
+}
+
+func parseOneCredential(entry []byte) (*ParsedOAuthCredentials, error) {
 	// The file wraps the bundle under "claudeAiOauth"; a bare bundle is also
 	// accepted. Decode into a wrapper first, then fall back to the bare object.
 	var wrapper struct {
 		ClaudeAIOAuth *ClaudeAIOAuthFile `json:"claudeAiOauth"`
 	}
-	if err := json.Unmarshal([]byte(trimmed), &wrapper); err != nil {
+	if err := json.Unmarshal(entry, &wrapper); err != nil {
 		return nil, fmt.Errorf("invalid credential JSON: %w", err)
 	}
 
 	bundle := wrapper.ClaudeAIOAuth
 	if bundle == nil {
 		var bare ClaudeAIOAuthFile
-		if err := json.Unmarshal([]byte(trimmed), &bare); err != nil {
+		if err := json.Unmarshal(entry, &bare); err != nil {
 			return nil, fmt.Errorf("invalid credential JSON: %w", err)
 		}
 		bundle = &bare

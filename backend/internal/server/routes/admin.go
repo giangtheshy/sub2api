@@ -172,6 +172,11 @@ func registerContentModerationRoutes(admin *gin.RouterGroup, h *handler.Handlers
 		// 会话屏蔽管理：列出当前被本地拦截的标识、手动解除。
 		risk.GET("/blocks", h.Admin.ContentModeration.ListBlocks)
 		risk.DELETE("/blocks/:key", h.Admin.ContentModeration.Unblock)
+		// 终端用户永久封禁管理：与会话屏蔽不同，这里的记录不会自动过期，
+		// 只能管理员手动解除。
+		risk.GET("/end-user-bans", h.Admin.ContentModeration.ListEndUserBans)
+		risk.DELETE("/end-user-bans/all", h.Admin.ContentModeration.ClearEndUserBans)
+		risk.DELETE("/end-user-bans/:identity", h.Admin.ContentModeration.UnbanEndUser)
 	}
 }
 

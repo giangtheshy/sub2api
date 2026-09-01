@@ -45,6 +45,10 @@ func (r *cyberOrderingTestRepo) CountFlaggedByUserSince(ctx context.Context, use
 	return 0, nil
 }
 
+func (r *cyberOrderingTestRepo) CountFlaggedByEndUserSince(ctx context.Context, identity string, since time.Time, excludeCyberPolicy bool) (int, error) {
+	return 0, nil
+}
+
 func (r *cyberOrderingTestRepo) CleanupExpiredLogs(ctx context.Context, hitBefore time.Time, nonHitBefore time.Time) (*ContentModerationCleanupResult, error) {
 	return &ContentModerationCleanupResult{}, nil
 }
@@ -72,6 +76,7 @@ func TestRecordCyberPolicyEvent_DisabledWhenRiskControlOff(t *testing.T) {
 			SettingKeyRiskControlEnabled: "false",
 		}},
 		repo,
+		nil,
 		nil,
 		nil,
 		nil,
@@ -106,6 +111,7 @@ func TestRecordCyberPolicyEvent_WritesLogWhenEnabled(t *testing.T) {
 		nil,
 		nil,
 		nil, // emailService=nil: email path safely skipped
+		nil, // endUserBanStore=nil: end-user ban layer safely skipped
 	)
 
 	svc.RecordCyberPolicyEvent(context.Background(), CyberPolicyRecordInput{
@@ -210,6 +216,7 @@ func TestRecordCyberPolicyEvent_RespectsContentModerationScope(t *testing.T) {
 					SettingKeyContentModerationConfig: tt.config,
 				}},
 				repo, nil, nil, userRepo, nil, nil, nil,
+				nil,
 			)
 
 			svc.RecordCyberPolicyEvent(context.Background(), CyberPolicyRecordInput{
@@ -240,7 +247,7 @@ func TestRecordCyberPolicyEvent_InitialRuntimeSnapshotLoadFailureSkipsEvent(t *t
 		SettingKeyRiskControlEnabled:      "true",
 		SettingKeyContentModerationConfig: `{invalid`,
 	}}
-	svc := NewContentModerationService(settingRepo, repo, nil, nil, nil, nil, nil, nil)
+	svc := NewContentModerationService(settingRepo, repo, nil, nil, nil, nil, nil, nil, nil)
 
 	svc.RecordCyberPolicyEvent(context.Background(), CyberPolicyRecordInput{
 		UserID: 1,
@@ -260,7 +267,7 @@ func TestRecordCyberPolicyEvent_RuntimeSnapshotRefreshFailureKeepsStaleScope(t *
 		SettingKeyRiskControlEnabled:      "true",
 		SettingKeyContentModerationConfig: `{"all_groups":true,"model_filter":{"type":"include","models":["gpt-5"]}}`,
 	}}
-	svc := NewContentModerationService(settingRepo, repo, nil, nil, nil, nil, nil, nil)
+	svc := NewContentModerationService(settingRepo, repo, nil, nil, nil, nil, nil, nil, nil)
 	svc.runtimeCacheTTL = time.Minute
 
 	_, err := svc.loadRuntimeSnapshot(context.Background())
@@ -314,6 +321,7 @@ func TestRecordCyberPolicyEvent_CreateLogBeforeEmail(t *testing.T) {
 		nil,
 		nil,
 		nil, // emailService=nil: email path safely skipped; see doc comment above
+		nil, // endUserBanStore=nil: end-user ban layer safely skipped
 	)
 
 	svc.RecordCyberPolicyEvent(context.Background(), CyberPolicyRecordInput{
@@ -368,6 +376,7 @@ func TestApplyFlaggedAccountSideEffects_PassesExcludeCyberFlag(t *testing.T) {
 	svc := NewContentModerationService(
 		&contentModerationTestSettingRepo{values: map[string]string{}},
 		repo, nil, nil, nil, nil, nil, nil,
+		nil,
 	)
 	userID := int64(42)
 
@@ -390,6 +399,7 @@ func TestRecordCyberPolicyEvent_ExcludeFromBanCount_SkipsBanJudgment(t *testing.
 			SettingKeyContentModerationConfig: `{"cyber_policy_exclude_from_ban_count":true}`,
 		}},
 		repo, nil, nil, nil, nil, nil, nil,
+		nil,
 	)
 
 	svc.RecordCyberPolicyEvent(context.Background(), CyberPolicyRecordInput{
@@ -417,6 +427,7 @@ func TestRecordCyberPolicyEvent_DefaultCountsTowardBan(t *testing.T) {
 			SettingKeyRiskControlEnabled: "true",
 		}},
 		repo, nil, nil, nil, nil, nil, nil,
+		nil,
 	)
 
 	svc.RecordCyberPolicyEvent(context.Background(), CyberPolicyRecordInput{

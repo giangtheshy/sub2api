@@ -637,6 +637,7 @@
                   ref="importCredentialsFileRef"
                   type="file"
                   accept=".json,application/json"
+                  multiple
                   class="hidden"
                   @change="handleImportCredentialsFileSelected"
                 />
@@ -655,6 +656,18 @@
               >{{ importCredentialsExample }}</pre>
               <p class="mt-1 text-xs text-blue-600 dark:text-blue-400">
                 {{ t('admin.accounts.oauth.importCredentialsHint') }}
+              </p>
+              <!-- Shows how many accounts the paste will create, so a malformed
+                   or half-pasted batch is obvious before submitting. -->
+              <p
+                v-if="importCredentialsCount > 0"
+                class="mt-1 text-xs font-medium text-gray-600 dark:text-gray-300"
+              >
+                {{
+                  t('admin.accounts.oauth.importCredentialsDetected', {
+                    count: importCredentialsCount
+                  })
+                }}
               </p>
             </div>
 
@@ -1294,10 +1307,20 @@ const cookieFileInput = ref('')
 const cookieFileInputRef = ref<HTMLInputElement | null>(null)
 const importCredentialsInput = ref('')
 const importCredentialsFileRef = ref<HTMLInputElement | null>(null)
-// Plain JS string, not an i18n message: it holds literal JSON braces, which
+// Plain JS strings, not i18n messages: they hold literal JSON braces, which
 // vue-i18n would otherwise try to parse as interpolation placeholders.
-const importCredentialsExample =
-  '{"claudeAiOauth":{"accessToken":"sk-ant-oat01-...","refreshToken":"sk-ant-ort01-...","expiresAt":1787183506000,"subscriptionType":"max_20x"}}'
+// Two lines on purpose — the example is also the documentation for how to paste
+// a batch, and one object per line is the easiest form to build by hand.
+const importCredentialsExample = [
+  '{"claudeAiOauth":{"accessToken":"sk-ant-oat01-...","refreshToken":"sk-ant-ort01-...","expiresAt":1787183506000,"subscriptionType":"max_20x"}}',
+  '{"claudeAiOauth":{"accessToken":"sk-ant-oat01-...","refreshToken":"sk-ant-ort01-...","expiresAt":1787197125235,"subscriptionType":"default_claude_ai"}}'
+].join('\n')
+
+// Counts credentials by their mandatory refreshToken field. This is a preview
+// for the operator, not validation — the backend parses the blob authoritatively.
+const importCredentialsCount = computed(
+  () => importCredentialsInput.value.match(/"refreshToken"\s*:/g)?.length ?? 0
+)
 const cookieFileError = ref('')
 const cookieFileMode = ref<CookieImportMode>('oauth')
 const cookieFileModes: ReadonlyArray<{
@@ -1556,17 +1579,29 @@ const handleImportCookieFile = () => {
 
 const handleImportCredentialsFileSelected = async (event: Event) => {
   const input = event.target as HTMLInputElement
-  const file = input.files?.[0]
-  // Reset so picking the same file again still fires a change event.
+  const files = Array.from(input.files ?? [])
+  // Reset so picking the same files again still fires a change event.
   input.value = ''
-  if (!file) return
+  if (files.length === 0) return
 
-  if (file.size > MAX_COOKIE_FILE_BYTES) return
-  try {
-    importCredentialsInput.value = await file.text()
-  } catch {
-    // Leave the textarea untouched; the operator can paste manually.
+  // Several credential files become one blob, one object per line — the backend
+  // splits it back apart and creates an account per credential. Appending rather
+  // than replacing lets the operator pick files in more than one go.
+  const contents: string[] = []
+  for (const file of files) {
+    if (file.size > MAX_COOKIE_FILE_BYTES) continue
+    try {
+      contents.push((await file.text()).trim())
+    } catch {
+      // Skip the unreadable file; the operator can paste its contents manually.
+    }
   }
+
+  const loaded = contents.filter(Boolean).join('\n')
+  if (!loaded) return
+
+  const existing = importCredentialsInput.value.trim()
+  importCredentialsInput.value = existing ? `${existing}\n${loaded}` : loaded
 }
 
 const handleImportCredentials = () => {

@@ -2327,18 +2327,22 @@ func (h *OAuthHandler) ValidateCookieAccount(c *gin.Context) {
 	})
 }
 
-// ImportOAuthCredentialsRequest carries a pasted Claude Code credential file.
+// ImportOAuthCredentialsRequest carries pasted Claude Code credential files.
 type ImportOAuthCredentialsRequest struct {
 	// Credentials is the raw blob: {"claudeAiOauth":{...}} as written by Claude
 	// Code, or a bare {...} object with the same fields. Named to match the
-	// frontend payload; the field itself is the credential JSON.
+	// frontend payload; the field itself is the credential JSON. Several objects
+	// may be supplied at once (JSON array, one per line, or concatenated) to
+	// import a batch of accounts.
 	Credentials string `json:"credentials" binding:"required"`
 	ProxyID     *int64 `json:"proxy_id"`
 }
 
-// ImportOAuthCredentials imports an already-issued Claude OAuth credential file
-// and returns the same TokenInfo shape as the interactive OAuth exchange, so the
-// operator can create an account from a credential they already hold.
+// ImportOAuthCredentials imports already-issued Claude OAuth credential files and
+// returns one TokenInfo per credential — the same shape as the interactive OAuth
+// exchange — so the operator can create accounts from credentials they already
+// hold. The response is always a list, including for a single credential, so the
+// caller has one code path for both.
 // POST /api/v1/admin/accounts/import-oauth-credentials
 func (h *OAuthHandler) ImportOAuthCredentials(c *gin.Context) {
 	var req ImportOAuthCredentialsRequest
@@ -2347,7 +2351,7 @@ func (h *OAuthHandler) ImportOAuthCredentials(c *gin.Context) {
 		return
 	}
 
-	tokenInfo, err := h.oauthService.ImportOAuthCredentials(c.Request.Context(), &service.ImportOAuthCredentialsInput{
+	tokenInfos, err := h.oauthService.ImportOAuthCredentialsBatch(c.Request.Context(), &service.ImportOAuthCredentialsInput{
 		Raw:     req.Credentials,
 		ProxyID: req.ProxyID,
 	})
@@ -2356,7 +2360,10 @@ func (h *OAuthHandler) ImportOAuthCredentials(c *gin.Context) {
 		return
 	}
 
-	response.Success(c, tokenInfo)
+	response.Success(c, map[string]any{
+		"accounts": tokenInfos,
+		"total":    len(tokenInfos),
+	})
 }
 
 func (h *OAuthHandler) cookieAuth(c *gin.Context, scope string) {

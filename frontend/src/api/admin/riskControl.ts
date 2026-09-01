@@ -42,6 +42,8 @@ export interface ContentModerationConfig {
   keyword_blocking_mode: KeywordBlockingMode
   model_filter: ContentModerationModelFilter
   cyber_policy_exclude_from_ban_count: boolean
+  end_user_ban_enabled: boolean
+  end_user_ban_threshold: number
 }
 
 export type ContentModerationAPIKeyStatusValue = 'unknown' | 'ok' | 'error' | 'frozen'
@@ -122,6 +124,8 @@ export interface UpdateContentModerationConfig {
   keyword_blocking_mode?: KeywordBlockingMode
   model_filter?: ContentModerationModelFilter
   cyber_policy_exclude_from_ban_count?: boolean
+  end_user_ban_enabled?: boolean
+  end_user_ban_threshold?: number
 }
 
 export interface ContentModerationRuntimeStatus {
@@ -249,6 +253,29 @@ export interface UnblockResponse {
   unblocked: boolean
 }
 
+/**
+ * 一条终端用户永久封禁记录。与 CyberBlockItem 的区别：没有 expiresAt
+ * （永久，不会自动解除），多了 violationCount（判断是否误封的主要依据）。
+ * masked 是标识哈希的短前缀，绝不含原始 X-User-Id。
+ */
+export interface EndUserBanItem {
+  identity: string
+  masked: string
+  violationCount: number
+  reason: string
+  bannedAt: string
+}
+
+export interface UnbanEndUserResponse {
+  identity: string
+  masked: string
+  deleted: boolean
+}
+
+export interface ClearEndUserBansResponse {
+  deleted: number
+}
+
 export async function getConfig(): Promise<ContentModerationConfig> {
   const { data } = await apiClient.get<ContentModerationConfig>('/admin/risk-control/config')
   return data
@@ -313,6 +340,23 @@ export async function unblock(key: string): Promise<UnblockResponse> {
   return data
 }
 
+export async function listEndUserBans(): Promise<EndUserBanItem[]> {
+  const { data } = await apiClient.get<EndUserBanItem[]>('/admin/risk-control/end-user-bans')
+  return data ?? []
+}
+
+export async function unbanEndUser(identity: string): Promise<UnbanEndUserResponse> {
+  const { data } = await apiClient.delete<UnbanEndUserResponse>(
+    `/admin/risk-control/end-user-bans/${encodeURIComponent(identity)}`
+  )
+  return data
+}
+
+export async function clearEndUserBans(): Promise<ClearEndUserBansResponse> {
+  const { data } = await apiClient.delete<ClearEndUserBansResponse>('/admin/risk-control/end-user-bans/all')
+  return data
+}
+
 export const riskControlAPI = {
   getConfig,
   updateConfig,
@@ -324,6 +368,9 @@ export const riskControlAPI = {
   clearFlaggedHashes,
   listBlocks,
   unblock,
+  listEndUserBans,
+  unbanEndUser,
+  clearEndUserBans,
 }
 
 export default riskControlAPI

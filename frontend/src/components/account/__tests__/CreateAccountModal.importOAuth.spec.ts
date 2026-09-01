@@ -72,6 +72,7 @@ const OAuthAuthorizationFlowStub = defineComponent({
     showImportCredentialsOption: Boolean,
     showCookieFileOption: Boolean,
     initialInputMethod: String,
+    error: { type: String, default: '' },
   },
   emits: ['import-oauth-credentials', 'import-cookie-file'],
   template: `
@@ -84,6 +85,7 @@ const OAuthAuthorizationFlowStub = defineComponent({
         data-testid="import-cookie-account"
         @click="$emit('import-cookie-file', 'cookie-blob', 'cookie_account')"
       >cookie</button>
+      <span data-testid="flow-error">{{ error }}</span>
     </div>
   `,
 })
@@ -127,12 +129,14 @@ async function openAnthropicAuthStepWithControls() {
 describe('CreateAccountModal credential import applies account controls', () => {
   beforeEach(() => {
     createAccountMock.mockReset().mockResolvedValue({ id: 7, platform: 'anthropic', type: 'oauth' })
-    importOAuthCredentialsMock.mockReset().mockResolvedValue({
-      access_token: 'sk-ant-oat01-test',
-      refresh_token: 'sk-ant-ort01-test',
-      expires_at: 1787183506,
-      email_address: 'operator@example.com',
-    })
+    importOAuthCredentialsMock.mockReset().mockResolvedValue([
+      {
+        access_token: 'sk-ant-oat01-test',
+        refresh_token: 'sk-ant-ort01-test',
+        expires_at: 1787183506,
+        email_address: 'operator@example.com',
+      },
+    ])
     validateClaudeCookieMock.mockReset().mockResolvedValue({
       credentials: { cookie_jar: 'sessionKey=x', org_uuid: 'org-1' },
       extra: { plan: 'max_20x' },
@@ -187,6 +191,84 @@ describe('CreateAccountModal credential import applies account controls', () => 
     expect(payload?.credentials?.temp_unschedulable_enabled).toBe(true)
     expect(Array.isArray(payload?.credentials?.temp_unschedulable_rules)).toBe(true)
     expect((payload?.credentials?.temp_unschedulable_rules as unknown[]).length).toBeGreaterThan(0)
+  })
+
+  it('creates one account per imported credential, numbering the entered name', async () => {
+    importOAuthCredentialsMock.mockResolvedValue([
+      { access_token: 'a1', refresh_token: 'r1', email_address: 'one@example.com' },
+      { access_token: 'a2', refresh_token: 'r2', email_address: 'two@example.com' },
+      { access_token: 'a3', refresh_token: 'r3', email_address: 'three@example.com' },
+    ])
+
+    const wrapper = await openAnthropicAuthStepWithControls()
+    await wrapper.get('[data-testid="import-oauth-credentials"]').trigger('click')
+    await flushPromises()
+
+    expect(createAccountMock).toHaveBeenCalledTimes(3)
+    const names = createAccountMock.mock.calls.map((call) => call[0]?.name)
+    expect(names).toEqual(['imported account #1', 'imported account #2', 'imported account #3'])
+
+    const refreshTokens = createAccountMock.mock.calls.map(
+      (call) => call[0]?.credentials?.refresh_token
+    )
+    expect(refreshTokens).toEqual(['r1', 'r2', 'r3'])
+
+    // Every account in the batch gets the panel's switches, not just the first.
+    for (const call of createAccountMock.mock.calls) {
+      expect(call[0]?.extra?.base_rpm).toBe(15)
+      expect(call[0]?.extra?.enable_tls_fingerprint).toBe(true)
+    }
+  })
+
+  it('names each account after its own email when no name was entered', async () => {
+    importOAuthCredentialsMock.mockResolvedValue([
+      { access_token: 'a1', refresh_token: 'r1', email_address: 'one@example.com' },
+      { access_token: 'a2', refresh_token: 'r2', email_address: 'two@example.com' },
+    ])
+
+    const wrapper = mountModal()
+    // A name is required to leave step 1, so clear it once the auth step is open.
+    await wrapper.get('form#create-account-form input[type="text"]').setValue('placeholder')
+    await wrapper.get('form#create-account-form').trigger('submit.prevent')
+    await flushPromises()
+    ;(wrapper.vm as unknown as { form: { name: string } }).form.name = ''
+
+    await wrapper.get('[data-testid="import-oauth-credentials"]').trigger('click')
+    await flushPromises()
+
+    const names = createAccountMock.mock.calls.map((call) => call[0]?.name)
+    expect(names).toEqual(['one@example.com', 'two@example.com'])
+  })
+
+  it('keeps creating the rest of the batch when one account fails', async () => {
+    importOAuthCredentialsMock.mockResolvedValue([
+      { access_token: 'a1', refresh_token: 'r1', email_address: 'one@example.com' },
+      { access_token: 'a2', refresh_token: 'r2', email_address: 'two@example.com' },
+      { access_token: 'a3', refresh_token: 'r3', email_address: 'three@example.com' },
+    ])
+    createAccountMock
+      .mockResolvedValueOnce({ id: 1 })
+      .mockRejectedValueOnce(new Error('duplicate account'))
+      .mockResolvedValueOnce({ id: 3 })
+
+    const wrapper = await openAnthropicAuthStepWithControls()
+    await wrapper.get('[data-testid="import-oauth-credentials"]').trigger('click')
+    await flushPromises()
+
+    expect(createAccountMock).toHaveBeenCalledTimes(3)
+    // The failure is surfaced, so the modal stays open with the batch report.
+    expect(wrapper.html()).toContain('admin.accounts.oauth.keyAuthFailed')
+  })
+
+  it('reports an empty import instead of creating anything', async () => {
+    importOAuthCredentialsMock.mockResolvedValue([])
+
+    const wrapper = await openAnthropicAuthStepWithControls()
+    await wrapper.get('[data-testid="import-oauth-credentials"]').trigger('click')
+    await flushPromises()
+
+    expect(createAccountMock).not.toHaveBeenCalled()
+    expect(wrapper.html()).toContain('admin.accounts.oauth.importCredentialsEmpty')
   })
 
   it('carries the same switches into a cookie account', async () => {

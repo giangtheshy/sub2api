@@ -192,10 +192,12 @@ func (s *OAuthService) ExchangeCode(ctx context.Context, input *ExchangeCodeInpu
 	return tokenInfo, nil
 }
 
-// ImportOAuthCredentialsInput carries a pasted Claude Code credential file.
+// ImportOAuthCredentialsInput carries pasted Claude Code credential files.
 type ImportOAuthCredentialsInput struct {
 	// Raw is the credential blob: either {"claudeAiOauth":{...}} as written by
-	// Claude Code, or a bare {...} object with the same fields.
+	// Claude Code, or a bare {...} object with the same fields. Several such
+	// objects may be supplied at once — as a JSON array, one per line, or simply
+	// concatenated — to import a batch of accounts in one call.
 	Raw     string
 	ProxyID *int64
 }
@@ -208,10 +210,28 @@ type ImportOAuthCredentialsInput struct {
 // normalizes it into the same shape ExchangeCode returns, so the rest of the
 // OAuth account pipeline is reused unchanged. Account identity (org/email) is
 // enriched best-effort via the bootstrap endpoint and never blocks the import.
+//
+// When the blob holds several credentials only the first is returned; callers
+// that support batches use ImportOAuthCredentialsBatch.
 func (s *OAuthService) ImportOAuthCredentials(ctx context.Context, input *ImportOAuthCredentialsInput) (*TokenInfo, error) {
-	parsed, err := oauth.ParseClaudeOAuthCredentials(input.Raw)
+	tokenInfos, err := s.ImportOAuthCredentialsBatch(ctx, input)
+	if err != nil {
+		return nil, err
+	}
+	return tokenInfos[0], nil
+}
+
+// ImportOAuthCredentialsBatch imports every credential found in the blob and
+// returns one TokenInfo per account, in the order pasted. Duplicates sharing a
+// refresh token are collapsed by the parser. It never returns an empty slice
+// without an error, so callers can index the result after checking err.
+func (s *OAuthService) ImportOAuthCredentialsBatch(ctx context.Context, input *ImportOAuthCredentialsInput) ([]*TokenInfo, error) {
+	parsedCredentials, err := oauth.ParseClaudeOAuthCredentialsMany(input.Raw)
 	if err != nil {
 		return nil, fmt.Errorf("invalid OAuth credentials: %w", err)
+	}
+	if len(parsedCredentials) == 0 {
+		return nil, fmt.Errorf("invalid OAuth credentials: no credential object found")
 	}
 
 	var proxyURL string
@@ -222,33 +242,37 @@ func (s *OAuthService) ImportOAuthCredentials(ctx context.Context, input *Import
 		}
 	}
 
-	// ExpiresIn is derived from the file's expiry relative to now. A past or
-	// unknown expiry yields a non-positive value; the refresh path handles that
-	// by refreshing on first use.
-	expiresIn := parsed.ExpiresAt - time.Now().Unix()
+	now := time.Now().Unix()
+	tokenInfos := make([]*TokenInfo, 0, len(parsedCredentials))
+	for _, parsed := range parsedCredentials {
+		// ExpiresIn is derived from the file's expiry relative to now. A past or
+		// unknown expiry yields a non-positive value; the refresh path handles that
+		// by refreshing on first use.
+		tokenInfo := &TokenInfo{
+			AccessToken:  parsed.AccessToken,
+			TokenType:    "Bearer",
+			ExpiresIn:    parsed.ExpiresAt - now,
+			ExpiresAt:    parsed.ExpiresAt,
+			RefreshToken: parsed.RefreshToken,
+			Scope:        parsed.Scope,
+		}
 
-	tokenInfo := &TokenInfo{
-		AccessToken:  parsed.AccessToken,
-		TokenType:    "Bearer",
-		ExpiresIn:    expiresIn,
-		ExpiresAt:    parsed.ExpiresAt,
-		RefreshToken: parsed.RefreshToken,
-		Scope:        parsed.Scope,
+		// Best-effort identity enrichment. A failure here (expired access token,
+		// network error, endpoint change) must not fail the import — the refresh
+		// token can still mint a fresh access token later, and identity fields are
+		// optional on the account. One credential failing must not sink the others.
+		if info, errBoot := s.oauthClient.BootstrapAccount(ctx, parsed.AccessToken, proxyURL); errBoot == nil && info != nil {
+			tokenInfo.OrgUUID = info.OrganizationUUID
+			tokenInfo.AccountUUID = info.AccountUUID
+			tokenInfo.EmailAddress = info.EmailAddress
+		} else if errBoot != nil {
+			log.Printf("[OAuth] Import bootstrap enrichment skipped: %v", errBoot)
+		}
+
+		tokenInfos = append(tokenInfos, tokenInfo)
 	}
 
-	// Best-effort identity enrichment. A failure here (expired access token,
-	// network error, endpoint change) must not fail the import — the refresh
-	// token can still mint a fresh access token later, and identity fields are
-	// optional on the account.
-	if info, errBoot := s.oauthClient.BootstrapAccount(ctx, parsed.AccessToken, proxyURL); errBoot == nil && info != nil {
-		tokenInfo.OrgUUID = info.OrganizationUUID
-		tokenInfo.AccountUUID = info.AccountUUID
-		tokenInfo.EmailAddress = info.EmailAddress
-	} else if errBoot != nil {
-		log.Printf("[OAuth] Import bootstrap enrichment skipped: %v", errBoot)
-	}
-
-	return tokenInfo, nil
+	return tokenInfos, nil
 }
 
 // CookieAuthInput represents the input for cookie-based authentication

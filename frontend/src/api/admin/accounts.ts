@@ -502,24 +502,26 @@ export async function validateClaudeCookie(payload: {
 }
 
 /**
- * Import an already-issued Claude OAuth credential file (claudeAiOauth JSON).
+ * Import one or more already-issued Claude OAuth credential files (claudeAiOauth
+ * JSON) so a batch of accounts can be created from a single paste.
  *
- * The backend contacts no authorization endpoint and mints nothing: it accepts a
- * credential the operator already holds and returns the same TokenInfo shape as
- * the interactive OAuth exchange, so the caller creates a normal OAuth account.
+ * The backend contacts no authorization endpoint and mints nothing: it accepts
+ * credentials the operator already holds and returns the same TokenInfo shape as
+ * the interactive OAuth exchange, so the caller creates normal OAuth accounts.
  *
- * @param payload - The raw credential JSON and an optional proxy
- * @returns TokenInfo (access/refresh tokens, expiry, optional org/email)
+ * @param payload - The raw credential JSON (single object, JSON array, one per
+ *   line, or concatenated objects) and an optional proxy
+ * @returns One TokenInfo per credential, in the order pasted
  */
 export async function importOAuthCredentials(payload: {
   credentials: string
   proxy_id?: number
-}): Promise<Record<string, unknown>> {
-  const { data } = await apiClient.post<Record<string, unknown>>(
-    '/admin/accounts/import-oauth-credentials',
-    payload
-  )
-  return data
+}): Promise<Record<string, unknown>[]> {
+  const { data } = await apiClient.post<{
+    accounts: Record<string, unknown>[]
+    total: number
+  }>('/admin/accounts/import-oauth-credentials', payload)
+  return data?.accounts ?? []
 }
 
 /**

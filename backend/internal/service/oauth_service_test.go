@@ -703,3 +703,98 @@ func TestOAuthService_ImportOAuthCredentials(t *testing.T) {
 		}
 	})
 }
+
+func TestOAuthService_ImportOAuthCredentialsBatch(t *testing.T) {
+	t.Parallel()
+
+	// Synthetic tokens — never real credentials.
+	const first = `{"claudeAiOauth":{"accessToken":"sk-ant-oat01-ONE","refreshToken":"sk-ant-ort01-ONE","expiresAt":1787183506000,"subscriptionType":"max_20x"}}`
+	const second = `{"claudeAiOauth":{"accessToken":"sk-ant-oat01-TWO","refreshToken":"sk-ant-ort01-TWO","expiresAt":1787197125235,"subscriptionType":"default_claude_ai"}}`
+
+	t.Run("returns one token info per pasted credential, enriched individually", func(t *testing.T) {
+		emailsByToken := map[string]string{
+			"sk-ant-oat01-ONE": "one@example.com",
+			"sk-ant-oat01-TWO": "two@example.com",
+		}
+		client := &mockClaudeOAuthClient{
+			bootstrapFunc: func(_ context.Context, accessToken, _ string) (*ClaudeBootstrapInfo, error) {
+				return &ClaudeBootstrapInfo{EmailAddress: emailsByToken[accessToken]}, nil
+			},
+		}
+		svc := NewOAuthService(&mockProxyRepoForOAuth{}, client)
+		defer svc.Stop()
+
+		infos, err := svc.ImportOAuthCredentialsBatch(context.Background(), &ImportOAuthCredentialsInput{
+			Raw: first + "\n" + second,
+		})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(infos) != 2 {
+			t.Fatalf("got %d token infos, want 2", len(infos))
+		}
+		if infos[0].RefreshToken != "sk-ant-ort01-ONE" || infos[1].RefreshToken != "sk-ant-ort01-TWO" {
+			t.Fatalf("order or content wrong: %q / %q", infos[0].RefreshToken, infos[1].RefreshToken)
+		}
+		if infos[0].EmailAddress != "one@example.com" || infos[1].EmailAddress != "two@example.com" {
+			t.Errorf("each credential must be enriched with its own identity: %q / %q",
+				infos[0].EmailAddress, infos[1].EmailAddress)
+		}
+	})
+
+	// One expired access token in the batch must not cost the other accounts
+	// their import: the refresh token still works for all of them.
+	t.Run("one bootstrap failure does not sink the batch", func(t *testing.T) {
+		client := &mockClaudeOAuthClient{
+			bootstrapFunc: func(_ context.Context, accessToken, _ string) (*ClaudeBootstrapInfo, error) {
+				if accessToken == "sk-ant-oat01-ONE" {
+					return nil, fmt.Errorf("access token expired")
+				}
+				return &ClaudeBootstrapInfo{EmailAddress: "two@example.com"}, nil
+			},
+		}
+		svc := NewOAuthService(&mockProxyRepoForOAuth{}, client)
+		defer svc.Stop()
+
+		infos, err := svc.ImportOAuthCredentialsBatch(context.Background(), &ImportOAuthCredentialsInput{
+			Raw: "[" + first + "," + second + "]",
+		})
+		if err != nil {
+			t.Fatalf("batch must not fail on a bootstrap error: %v", err)
+		}
+		if len(infos) != 2 {
+			t.Fatalf("got %d token infos, want 2", len(infos))
+		}
+		if infos[0].EmailAddress != "" {
+			t.Errorf("failed enrichment should leave identity empty, got %q", infos[0].EmailAddress)
+		}
+		if infos[1].EmailAddress != "two@example.com" {
+			t.Errorf("second credential lost its identity: %q", infos[1].EmailAddress)
+		}
+	})
+
+	t.Run("single credential still yields a one-item batch", func(t *testing.T) {
+		svc := NewOAuthService(&mockProxyRepoForOAuth{}, &mockClaudeOAuthClient{})
+		defer svc.Stop()
+
+		infos, err := svc.ImportOAuthCredentialsBatch(context.Background(), &ImportOAuthCredentialsInput{Raw: first})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(infos) != 1 || infos[0].RefreshToken != "sk-ant-ort01-ONE" {
+			t.Fatalf("unexpected batch: %+v", infos)
+		}
+	})
+
+	t.Run("rejects a batch containing an incomplete credential", func(t *testing.T) {
+		svc := NewOAuthService(&mockProxyRepoForOAuth{}, &mockClaudeOAuthClient{})
+		defer svc.Stop()
+
+		_, err := svc.ImportOAuthCredentialsBatch(context.Background(), &ImportOAuthCredentialsInput{
+			Raw: first + "\n" + `{"claudeAiOauth":{"accessToken":"sk-ant-oat01-NOREFRESH"}}`,
+		})
+		if err == nil {
+			t.Fatal("expected an error naming the bad credential")
+		}
+	})
+}

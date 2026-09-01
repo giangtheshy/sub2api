@@ -172,6 +172,18 @@ type ContentModerationConfig struct {
 	// 当次不判定封号，且历史 cyber 行在 CountFlaggedByUserSince 中被排除。
 	// 默认 false（计入，与历史行为一致；旧配置 JSON 无此字段时反序列化为 false）。
 	CyberPolicyExcludeFromBanCount bool `json:"cyber_policy_exclude_from_ban_count"`
+
+	// EndUserBanEnabled 打开"终端用户级封禁"：违规累计到 EndUserBanThreshold 时，
+	// 只封该终端客户（转售商账号下的单个客户），而非 disable 整个账号。
+	// 默认 false——旧配置 JSON 无此字段时反序列化为 false，行为与升级前一致。
+	//
+	// 只对带 X-User-Id 的请求生效。拿不到该头就无法区分终端用户，本层跳过，
+	// 交由账号层（AutoBanEnabled/BanThreshold）兜底。
+	EndUserBanEnabled bool `json:"end_user_ban_enabled"`
+	// EndUserBanThreshold 是终端用户封禁阈值，与账号层的 BanThreshold 相互独立：
+	// 前者应该低（精准封到人），后者应该高（只在整片客户都在滥用时才动账号）。
+	// 两层共用 ViolationWindowHours 作为统计窗口。
+	EndUserBanThreshold int `json:"end_user_ban_threshold"`
 }
 
 type ContentModerationConfigView struct {
@@ -207,6 +219,8 @@ type ContentModerationConfigView struct {
 	KeywordBlockingMode            string                          `json:"keyword_blocking_mode"`
 	ModelFilter                    ContentModerationModelFilter    `json:"model_filter"`
 	CyberPolicyExcludeFromBanCount bool                            `json:"cyber_policy_exclude_from_ban_count"`
+	EndUserBanEnabled              bool                            `json:"end_user_ban_enabled"`
+	EndUserBanThreshold            int                             `json:"end_user_ban_threshold"`
 }
 
 type ContentModerationAPIKeyStatus struct {
@@ -299,6 +313,8 @@ type UpdateContentModerationConfigInput struct {
 	KeywordBlockingMode            *string                       `json:"keyword_blocking_mode"`
 	ModelFilter                    *ContentModerationModelFilter `json:"model_filter"`
 	CyberPolicyExcludeFromBanCount *bool                         `json:"cyber_policy_exclude_from_ban_count"`
+	EndUserBanEnabled             *bool                         `json:"end_user_ban_enabled"`
+	EndUserBanThreshold           *int                          `json:"end_user_ban_threshold"`
 }
 
 type ContentModerationModelFilter struct {
@@ -319,6 +335,9 @@ type ContentModerationCheckInput struct {
 	Model      string
 	Protocol   string
 	Body       []byte
+	// EndUserIdentity 是 EndUserBanIdentity 派生的终端用户标识（sha256 十六进制）。
+	// 空串表示请求没带 X-User-Id，终端用户层不参与判定。
+	EndUserIdentity string
 }
 
 type ContentModerationInput struct {
@@ -410,7 +429,13 @@ type ContentModerationLog struct {
 	Error             string             `json:"error"`
 	ViolationCount    int                `json:"violation_count"`
 	AutoBanned        bool               `json:"auto_banned"`
-	EmailSent         bool               `json:"email_sent"`
+	// EndUserIdentity 是"该账号下某个终端客户"的稳定标识（sha256 十六进制），
+	// 由 EndUserBanIdentity 从 X-User-Id 派生；拿不到时为空串。
+	// 与 UserID 的区别：UserID 是转售商的 sub2api 账号，这个是他名下的某个客户。
+	EndUserIdentity string `json:"end_user_identity,omitempty"`
+	// EndUserBanned 标记本行是否触发了终端用户级封禁，同时充当计数重置锚点。
+	EndUserBanned bool `json:"end_user_banned"`
+	EmailSent     bool `json:"email_sent"`
 	UserStatus        string             `json:"user_status"`
 	QueueDelayMS      *int               `json:"queue_delay_ms,omitempty"`
 	CreatedAt         time.Time          `json:"created_at"`
@@ -478,12 +503,26 @@ type ContentModerationClearHashesResult struct {
 	Deleted int64 `json:"deleted"`
 }
 
+// ContentModerationUnbanEndUserResult 只回显脱敏标识，原始 X-User-Id 不出网关。
+type ContentModerationUnbanEndUserResult struct {
+	Identity string `json:"identity"`
+	Masked   string `json:"masked"`
+	Deleted  bool   `json:"deleted"`
+}
+
+type ContentModerationClearEndUserBansResult struct {
+	Deleted int64 `json:"deleted"`
+}
+
 type ContentModerationRepository interface {
 	CreateLog(ctx context.Context, log *ContentModerationLog) error
 	ListLogs(ctx context.Context, filter ContentModerationLogFilter) ([]ContentModerationLog, *pagination.PaginationResult, error)
 	// CountFlaggedByUserSince 统计窗口内计入封号的违规次数（排除 hash_block；
 	// excludeCyberPolicy 为 true 时额外排除 cyber_policy 行）。
 	CountFlaggedByUserSince(ctx context.Context, userID int64, since time.Time, excludeCyberPolicy bool) (int, error)
+	// CountFlaggedByEndUserSince 统计窗口内某个终端用户（转售商账号下的单个客户）
+	// 计入封禁的违规次数。重置锚点是 end_user_banned，与账号层的 auto_banned 独立。
+	CountFlaggedByEndUserSince(ctx context.Context, identity string, since time.Time, excludeCyberPolicy bool) (int, error)
 	CleanupExpiredLogs(ctx context.Context, hitBefore time.Time, nonHitBefore time.Time) (*ContentModerationCleanupResult, error)
 	// UpdateLogEmailSent 回写邮件发送结果（F7：CreateLog 先行后补 EmailSent）。
 	UpdateLogEmailSent(ctx context.Context, id int64, sent bool) error
@@ -497,10 +536,34 @@ type ContentModerationHashCache interface {
 	CountFlaggedInputHashes(ctx context.Context) (int64, error)
 }
 
+// EndUserBanMeta 是一条终端用户封禁记录的可展示元信息。
+// Masked 是标识哈希的短前缀——原始 X-User-Id 绝不落库或上屏。
+type EndUserBanMeta struct {
+	Identity       string    `json:"identity"`
+	Masked         string    `json:"masked"`
+	ViolationCount int       `json:"violationCount"`
+	Reason         string    `json:"reason"`
+	BannedAt       time.Time `json:"bannedAt"`
+}
+
+// ContentModerationEndUserBanStore 是终端用户永久封禁表的存取接口。
+//
+// 与会话屏蔽（CyberSessionBlockStore）的关键区别：**没有 TTL**。
+// 会话屏蔽是给账号池减压的临时冷却，换个会话就能绕开；本表是真正的处罚，
+// 只能由管理员手动解除。语义与 ContentModerationHashCache 的永久哈希表一致。
+type ContentModerationEndUserBanStore interface {
+	BanEndUser(ctx context.Context, identity string, meta EndUserBanMeta) error
+	IsEndUserBanned(ctx context.Context, identity string) (bool, error)
+	UnbanEndUser(ctx context.Context, identity string) (bool, error)
+	ListBannedEndUsers(ctx context.Context) ([]EndUserBanMeta, error)
+	ClearBannedEndUsers(ctx context.Context) (int64, error)
+}
+
 type ContentModerationService struct {
 	settingRepo              SettingRepository
 	repo                     ContentModerationRepository
 	hashCache                ContentModerationHashCache
+	endUserBanStore          ContentModerationEndUserBanStore
 	groupRepo                GroupRepository
 	userRepo                 UserRepository
 	proxyRepo                ProxyRepository
@@ -579,6 +642,7 @@ func NewContentModerationService(
 	proxyRepo ProxyRepository,
 	authCacheInvalidator APIKeyAuthCacheInvalidator,
 	emailService *EmailService,
+	endUserBanStore ContentModerationEndUserBanStore,
 ) *ContentModerationService {
 	svc := &ContentModerationService{
 		settingRepo:          settingRepo,
@@ -589,6 +653,7 @@ func NewContentModerationService(
 		proxyRepo:            proxyRepo,
 		authCacheInvalidator: authCacheInvalidator,
 		emailService:         emailService,
+		endUserBanStore:      endUserBanStore,
 		httpClient:           servertiming.InstrumentClient(nil),
 		workerCount:          maxContentModerationWorkerCount,
 		asyncQueue:           make(chan contentModerationTask, maxContentModerationQueueSize),
@@ -698,6 +763,12 @@ func (s *ContentModerationService) UpdateConfig(ctx context.Context, input Updat
 	}
 	if input.CyberPolicyExcludeFromBanCount != nil {
 		cfg.CyberPolicyExcludeFromBanCount = *input.CyberPolicyExcludeFromBanCount
+	}
+	if input.EndUserBanEnabled != nil {
+		cfg.EndUserBanEnabled = *input.EndUserBanEnabled
+	}
+	if input.EndUserBanThreshold != nil {
+		cfg.EndUserBanThreshold = *input.EndUserBanThreshold
 	}
 	if input.Thresholds != nil {
 		cfg.Thresholds = mergeContentModerationThresholds(ContentModerationDefaultThresholds(), *input.Thresholds)
@@ -1369,6 +1440,81 @@ func (s *ContentModerationService) ClearFlaggedInputHashes(ctx context.Context) 
 	return &ContentModerationClearHashesResult{Deleted: deleted}, nil
 }
 
+// ListBannedEndUsers 返回当前被永久封禁的终端用户，按封禁时间倒序。
+//
+// 读侧 fail-safe：存储不可用时返回空列表而非错误——管理页只是少一块信息，
+// 不该整页报错。写侧（UnbanEndUser/ClearBannedEndUsers）相反：
+// 管理员点了解封就必须知道成败。
+func (s *ContentModerationService) ListBannedEndUsers(ctx context.Context) ([]EndUserBanMeta, error) {
+	if s == nil || s.endUserBanStore == nil {
+		return []EndUserBanMeta{}, nil
+	}
+	items, err := s.endUserBanStore.ListBannedEndUsers(ctx)
+	if err != nil {
+		slog.Warn("content_moderation.list_end_user_bans_failed", "error", err)
+		return []EndUserBanMeta{}, nil
+	}
+	if items == nil {
+		return []EndUserBanMeta{}, nil
+	}
+	return items, nil
+}
+
+// UnbanEndUser 人工解封一个终端用户。幂等：解封不存在的标识也算成功。
+//
+// 解封后计数从零起算：CountFlaggedByEndUserSince 只统计最近一次
+// end_user_banned 之后的违规行，所以旧历史不会让人刚解封就被立刻再封。
+func (s *ContentModerationService) UnbanEndUser(ctx context.Context, identity string) (*ContentModerationUnbanEndUserResult, error) {
+	identity = normalizeContentModerationHash(identity)
+	if identity == "" {
+		return nil, infraerrors.BadRequest("INVALID_END_USER_IDENTITY", "终端用户标识无效")
+	}
+	if s == nil || s.endUserBanStore == nil {
+		return nil, infraerrors.InternalServer("END_USER_BAN_STORE_UNAVAILABLE", "终端用户封禁表不可用")
+	}
+	deleted, err := s.endUserBanStore.UnbanEndUser(ctx, identity)
+	if err != nil {
+		return nil, fmt.Errorf("unban end user: %w", err)
+	}
+	return &ContentModerationUnbanEndUserResult{
+		Identity: identity,
+		Masked:   maskModerationIdentity(identity),
+		Deleted:  deleted,
+	}, nil
+}
+
+// ClearBannedEndUsers 清空终端用户封禁表，返回清除条数。
+func (s *ContentModerationService) ClearBannedEndUsers(ctx context.Context) (*ContentModerationClearEndUserBansResult, error) {
+	if s == nil || s.endUserBanStore == nil {
+		return nil, infraerrors.InternalServer("END_USER_BAN_STORE_UNAVAILABLE", "终端用户封禁表不可用")
+	}
+	deleted, err := s.endUserBanStore.ClearBannedEndUsers(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("clear end user bans: %w", err)
+	}
+	return &ContentModerationClearEndUserBansResult{Deleted: deleted}, nil
+}
+
+// IsEndUserBanned 是网关拦截点：请求进来先问这里，命中就地拒绝。
+//
+// fail-open：开关关闭、标识为空、存储不可用或查询出错都放行。封禁是增强防护，
+// 不能因为 Redis 抖动就把正常流量全挡掉。
+func (s *ContentModerationService) IsEndUserBanned(ctx context.Context, identity string) bool {
+	if s == nil || s.endUserBanStore == nil || strings.TrimSpace(identity) == "" {
+		return false
+	}
+	cfg, err := s.loadConfig(ctx)
+	if err != nil || cfg == nil || !cfg.EndUserBanEnabled {
+		return false
+	}
+	banned, err := s.endUserBanStore.IsEndUserBanned(ctx, identity)
+	if err != nil {
+		slog.Warn("content_moderation.end_user_ban_lookup_failed", "identity", maskModerationIdentity(identity), "error", err)
+		return false
+	}
+	return banned
+}
+
 func (s *ContentModerationService) GetStatus(ctx context.Context) (*ContentModerationRuntimeStatus, error) {
 	if s == nil {
 		return &ContentModerationRuntimeStatus{}, nil
@@ -1867,6 +2013,7 @@ func (s *ContentModerationService) buildLog(input ContentModerationCheckInput, c
 		UserEmail:         input.UserEmail,
 		APIKeyID:          apiKeyID,
 		APIKeyName:        input.APIKeyName,
+		EndUserIdentity:   strings.TrimSpace(input.EndUserIdentity),
 		GroupID:           cloneInt64Ptr(input.GroupID),
 		GroupName:         input.GroupName,
 		Endpoint:          input.Endpoint,
@@ -1898,6 +2045,9 @@ func (s *ContentModerationService) persistContentModerationLog(ctx context.Conte
 	autoBanJustApplied := false
 	if applySideEffects {
 		autoBanJustApplied = s.applyFlaggedAccountSideEffects(ctx, cfg, log)
+		// 终端用户层与账号层并列判定：账号层没到阈值不代表这个终端客户没到。
+		// 必须在 CreateLog 之前跑完，EndUserBanned 才能随本行落库当计数锚点。
+		s.applyFlaggedEndUserSideEffects(ctx, cfg, log)
 		s.sendFlaggedNotificationSideEffects(ctx, cfg, log, autoBanJustApplied)
 	}
 	if s.repo != nil {
@@ -1946,6 +2096,87 @@ func (s *ContentModerationService) applyFlaggedAccountSideEffects(ctx context.Co
 		log.AutoBanned = true
 	}
 	return autoBanJustApplied
+}
+
+// applyFlaggedEndUserSideEffects 按"终端用户"维度判定并施加永久封禁。
+//
+// 与 applyFlaggedAccountSideEffects 并列运行、互不干扰：两层阈值独立，
+// 一层拦下不代表另一层不判。这是刻意的——账号层是最后的兜底，
+// 终端用户层是日常的精准处罚。
+//
+// 只在 log.EndUserIdentity 非空时工作。空标识意味着请求没带 X-User-Id，
+// 无法区分同一把 Key 背后的不同客户；此时**必须跳过**而不是退化到封 Key，
+// 否则就回到了本功能要消灭的连坐。
+//
+// 返回是否在本次调用中新封禁（重复命中已封禁标识返回 false）。
+func (s *ContentModerationService) applyFlaggedEndUserSideEffects(ctx context.Context, cfg *ContentModerationConfig, log *ContentModerationLog) bool {
+	if s == nil || cfg == nil || log == nil || !log.Flagged {
+		return false
+	}
+	if !cfg.EndUserBanEnabled || cfg.EndUserBanThreshold <= 0 {
+		return false
+	}
+	identity := strings.TrimSpace(log.EndUserIdentity)
+	if identity == "" {
+		return false
+	}
+	if s.repo == nil || s.endUserBanStore == nil {
+		return false
+	}
+	count := 1
+	if cfg.ViolationWindowHours > 0 {
+		since := time.Now().Add(-time.Duration(cfg.ViolationWindowHours) * time.Hour)
+		if n, err := s.repo.CountFlaggedByEndUserSince(ctx, identity, since, cfg.CyberPolicyExcludeFromBanCount); err == nil {
+			count = n + 1
+		}
+	}
+	if count < cfg.EndUserBanThreshold {
+		return false
+	}
+	banned, err := s.endUserBanStore.IsEndUserBanned(ctx, identity)
+	if err != nil {
+		slog.Warn("content_moderation.end_user_ban_check_failed", "identity", maskModerationIdentity(identity), "error", err)
+		return false
+	}
+	// 已封禁：仍然标记本行，让计数重置锚点跟着最新一次命中走。
+	if banned {
+		log.EndUserBanned = true
+		return false
+	}
+	meta := EndUserBanMeta{
+		Identity:       identity,
+		Masked:         maskModerationIdentity(identity),
+		ViolationCount: count,
+		Reason:         strings.TrimSpace(log.HighestCategory),
+		BannedAt:       time.Now().UTC(),
+	}
+	if err := s.endUserBanStore.BanEndUser(ctx, identity, meta); err != nil {
+		slog.Warn("content_moderation.end_user_ban_failed", "identity", meta.Masked, "error", err)
+		return false
+	}
+	log.EndUserBanned = true
+	slog.Info("content_moderation.end_user_banned",
+		"identity", meta.Masked,
+		"user_id", contentModerationLogUserID(log),
+		"violation_count", count,
+		"threshold", cfg.EndUserBanThreshold)
+	return true
+}
+
+// maskModerationIdentity 取哈希前缀作为展示标识（标识本身已是 sha256，不可逆）。
+func maskModerationIdentity(identity string) string {
+	if len(identity) > 12 {
+		return identity[:12]
+	}
+	return identity
+}
+
+// contentModerationLogUserID 安全解引用 log.UserID，仅用于日志。
+func contentModerationLogUserID(log *ContentModerationLog) int64 {
+	if log == nil || log.UserID == nil {
+		return 0
+	}
+	return *log.UserID
 }
 
 func (s *ContentModerationService) sendFlaggedNotificationSideEffects(ctx context.Context, cfg *ContentModerationConfig, log *ContentModerationLog, autoBanJustApplied bool) {
@@ -2107,6 +2338,9 @@ func defaultContentModerationConfig() *ContentModerationConfig {
 			Models: []string{},
 		},
 		CyberPolicyExcludeFromBanCount: false,
+		// 默认关闭 + 阈值 0：升级后行为与升级前完全一致，必须由管理员显式开启。
+		EndUserBanEnabled:   false,
+		EndUserBanThreshold: 0,
 	}
 }
 
@@ -2439,6 +2673,8 @@ func (s *ContentModerationService) configView(cfg *ContentModerationConfig) *Con
 		KeywordBlockingMode:            cfg.KeywordBlockingMode,
 		ModelFilter:                    cloneContentModerationModelFilter(cfg.ModelFilter),
 		CyberPolicyExcludeFromBanCount: cfg.CyberPolicyExcludeFromBanCount,
+		EndUserBanEnabled:              cfg.EndUserBanEnabled,
+		EndUserBanThreshold:            cfg.EndUserBanThreshold,
 	}
 }
 
@@ -2990,6 +3226,9 @@ type CyberPolicyRecordInput struct {
 	UpstreamStatus  int
 	UpstreamInTok   int
 	UpstreamOutTok  int
+	// EndUserIdentity 是 EndUserBanIdentity 派生的终端用户标识（sha256 十六进制）。
+	// 空串表示请求没带 X-User-Id，终端用户层不参与判定。
+	EndUserIdentity string
 }
 
 // RecordCyberPolicyEvent 把一次 cyber_policy 硬阻断写入风控中心日志、计入违规计数、
@@ -3056,6 +3295,7 @@ func (s *ContentModerationService) RecordCyberPolicyEvent(ctx context.Context, i
 		HighestCategory: category,
 		HighestScore:    1.0,
 		Error:           trimRunes(redactContentModerationSecrets(errBody), maxModerationExcerptRunes*4),
+		EndUserIdentity: strings.TrimSpace(in.EndUserIdentity),
 		CreatedAt:       time.Now(),
 	}
 	// 开关开时 cyber_policy 不参与封号计数：当次不判定（此处跳过），
@@ -3063,6 +3303,8 @@ func (s *ContentModerationService) RecordCyberPolicyEvent(ctx context.Context, i
 	autoBanned := false
 	if !cfg.CyberPolicyExcludeFromBanCount {
 		autoBanned = s.applyFlaggedAccountSideEffects(ctx, cfg, log)
+		// 同一个排除开关同时管住两层：cyber 不计入封号时，终端用户层也不判。
+		s.applyFlaggedEndUserSideEffects(ctx, cfg, log)
 	}
 	log.EmailSent = false
 	logPersisted := true

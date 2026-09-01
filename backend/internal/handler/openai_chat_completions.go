@@ -102,6 +102,11 @@ func (h *OpenAIGatewayHandler) ChatCompletions(c *gin.Context) {
 		h.openAISecurityAuditError(c, decision)
 		return
 	}
+	// 终端用户永久封禁先判：只读 header，比会话屏蔽 key 便宜，且优先于临时冷却。
+	endUserIdentity, endUserRejected := h.rejectIfEndUserBanned(c, apiKey, reqModel, cyberBlockFormatChat)
+	if endUserRejected {
+		return
+	}
 	if h.rejectIfCyberSessionBlocked(c, apiKey, body, reqModel, cyberBlockFormatChat) {
 		return
 	}
@@ -243,7 +248,7 @@ func (h *OpenAIGatewayHandler) ChatCompletions(c *gin.Context) {
 		if service.GetOpsCyberPolicy(c) != nil {
 			cyberBlockKeyChat = service.CyberSessionBlockKey(apiKey.ID, apiKeyUserID(apiKey), c, body)
 		}
-		h.recordCyberPolicyIfMarked(c, apiKey, account, subscription, reqModel, err != nil, cyberBlockKeyChat, clientRequestedUsageFields(c, channelMapping, reqModel, ""), service.HashUsageRequestPayload(body))
+		h.recordCyberPolicyIfMarked(c, apiKey, account, subscription, reqModel, err != nil, cyberBlockKeyChat, clientRequestedUsageFields(c, channelMapping, reqModel, ""), service.HashUsageRequestPayload(body), endUserIdentity)
 
 		forwardDurationMs := time.Since(forwardStart).Milliseconds()
 		upstreamLatencyMs, _ := getContextInt64(c, service.OpsUpstreamLatencyMsKey)

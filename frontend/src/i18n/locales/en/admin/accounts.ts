@@ -988,14 +988,16 @@ export default {
         cookieFileReadFailed: 'Could not read that file. Paste its contents instead.',
         importCredentials: 'Import OAuth credentials',
         importCredentialsDesc:
-          'Paste or upload a Claude Code credential file (the JSON containing "claudeAiOauth" with accessToken and refreshToken). It is imported as-is and creates a normal OAuth account — nothing is minted and no authorization step runs.',
+          'Paste or upload Claude Code credential files (the JSON containing "claudeAiOauth" with accessToken and refreshToken). They are imported as-is and create normal OAuth accounts — nothing is minted and no authorization step runs.',
         importCredentialsInputLabel: 'claudeAiOauth JSON',
-        importCredentialsUpload: 'Choose file',
+        importCredentialsUpload: 'Choose files',
         importCredentialsPlaceholder:
-          'Paste the claudeAiOauth JSON here (the object containing accessToken and refreshToken)…',
+          'Paste one or more claudeAiOauth JSON objects here — as an array, one per line, or simply one after another…',
         importCredentialsHint:
-          'Accepts the wrapped claudeAiOauth file or a bare object with the same fields. One file = one account.',
-        importCredentialsSubmit: 'Import & create account',
+          'Accepts wrapped claudeAiOauth files or bare objects with the same fields. Paste several to create several accounts at once; duplicates sharing a refresh token are skipped. With a name entered, accounts are numbered; otherwise each is named after its own email.',
+        importCredentialsSubmit: 'Import & create accounts',
+        importCredentialsDetected: '{count} credential(s) detected',
+        importCredentialsEmpty: 'No credential was found in that input.',
         cookieSessionStale:
           'The cookie is valid, but your claude.ai session is too old for Anthropic to grant OAuth access. Sign out and sign back in to claude.ai, export the cookies again right away, then retry.',
         cookieInvalid:

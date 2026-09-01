@@ -53,17 +53,20 @@ INSERT INTO content_moderation_logs (
     request_id, user_id, user_email, api_key_id, api_key_name, group_id, group_name,
     endpoint, provider, model, mode, action, flagged, highest_category, highest_score,
     category_scores, threshold_snapshot, input_excerpt, upstream_latency_ms, error,
-    violation_count, auto_banned, email_sent, queue_delay_ms, matched_keyword
+    violation_count, auto_banned, email_sent, queue_delay_ms, matched_keyword,
+    end_user_identity, end_user_banned
 ) VALUES (
     $1, $2, $3, $4, $5, $6, $7,
     $8, $9, $10, $11, $12, $13, $14, $15,
     $16::jsonb, $17::jsonb, $18, $19, $20,
-    $21, $22, $23, $24, $25
+    $21, $22, $23, $24, $25,
+    $26, $27
 ) RETURNING id, created_at`,
 		log.RequestID, userID, log.UserEmail, apiKeyID, log.APIKeyName, groupID, log.GroupName,
 		log.Endpoint, log.Provider, log.Model, log.Mode, log.Action, log.Flagged, log.HighestCategory, log.HighestScore,
 		string(categoryScores), string(thresholdSnapshot), log.InputExcerpt, latency, log.Error,
 		log.ViolationCount, log.AutoBanned, log.EmailSent, nullableIntPtr(log.QueueDelayMS), log.MatchedKeyword,
+		log.EndUserIdentity, log.EndUserBanned,
 	).Scan(&log.ID, &log.CreatedAt)
 	if err != nil {
 		return fmt.Errorf("insert content moderation log: %w", err)
@@ -201,6 +204,44 @@ WHERE user_id = $1
 `, userID, since, excludeCyberPolicy).Scan(&count)
 	if err != nil {
 		return 0, fmt.Errorf("count user content moderation flagged logs: %w", err)
+	}
+	return count, nil
+}
+
+// CountFlaggedByEndUserSince 统计窗口内某个终端用户的违规次数。
+//
+// 与 CountFlaggedByUserSince 结构一致，只换了两处：过滤列改为 end_user_identity
+// （转售商账号下的某个客户，而非账号本身），重置锚点改为 end_user_banned。
+//
+// 锚点必须独立于 auto_banned：两层封禁阈值不同、解封动作也不同，
+// 共用锚点会导致解封一层意外重置另一层的计数。
+//
+// identity 为空串时直接返回 0——空标识意味着请求没带 X-User-Id，
+// 无法区分终端用户，本层不应参与判定（调用方也不会走到这里）。
+func (r *contentModerationRepository) CountFlaggedByEndUserSince(ctx context.Context, identity string, since time.Time, excludeCyberPolicy bool) (int, error) {
+	identity = strings.TrimSpace(identity)
+	if identity == "" {
+		return 0, nil
+	}
+	// SQL 中的 'cyber_policy' 字面量须与 service.ContentModerationActionCyberPolicy 保持一致。
+	var count int
+	err := r.db.QueryRowContext(ctx, `
+WITH last_end_user_ban AS (
+    SELECT MAX(created_at) AS at
+    FROM content_moderation_logs
+    WHERE end_user_identity = $1 AND end_user_banned = TRUE
+)
+SELECT COUNT(*)
+FROM content_moderation_logs
+WHERE end_user_identity = $1
+  AND flagged = TRUE
+  AND action <> 'hash_block'
+  AND ($3::bool IS FALSE OR action <> 'cyber_policy')
+  AND created_at >= $2
+  AND created_at > COALESCE((SELECT at FROM last_end_user_ban), '-infinity'::timestamptz)
+`, identity, since, excludeCyberPolicy).Scan(&count)
+	if err != nil {
+		return 0, fmt.Errorf("count end user content moderation flagged logs: %w", err)
 	}
 	return count, nil
 }

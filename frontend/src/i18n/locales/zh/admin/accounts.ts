@@ -1051,14 +1051,16 @@ export default {
         cookieFileReadFailed: '无法读取该文件，请改为直接粘贴内容。',
         importCredentials: '导入 OAuth 凭证',
         importCredentialsDesc:
-          '粘贴或上传 Claude Code 的凭证文件（包含 "claudeAiOauth"，内有 accessToken 与 refreshToken 的 JSON）。将按原样导入并创建一个普通 OAuth 账号——不铸造任何令牌，也不执行授权步骤。',
+          '粘贴或上传 Claude Code 的凭证文件（包含 "claudeAiOauth"，内有 accessToken 与 refreshToken 的 JSON）。将按原样导入并创建普通 OAuth 账号——不铸造任何令牌，也不执行授权步骤。',
         importCredentialsInputLabel: 'claudeAiOauth JSON',
         importCredentialsUpload: '选择文件',
         importCredentialsPlaceholder:
-          '在此粘贴 claudeAiOauth JSON（包含 accessToken 与 refreshToken 的对象）……',
+          '在此粘贴一个或多个 claudeAiOauth JSON 对象——可用数组、每行一个，或直接依次拼接……',
         importCredentialsHint:
-          '支持带包装的 claudeAiOauth 文件，或字段相同的裸对象。一个文件 = 一个账号。',
+          '支持带包装的 claudeAiOauth 文件，或字段相同的裸对象。粘贴多个即可一次创建多个账号；refreshToken 相同的重复项会被跳过。填写了名称时账号会自动编号，否则各自以自己的邮箱命名。',
         importCredentialsSubmit: '导入并创建账号',
+        importCredentialsDetected: '检测到 {count} 个凭证',
+        importCredentialsEmpty: '在该输入中未找到任何凭证。',
         cookieSessionStale:
           'Cookie 有效，但 claude.ai 会话过旧，Anthropic 拒绝授予 OAuth 权限。请退出并重新登录 claude.ai，立即重新导出 cookies 后再试。',
         cookieInvalid: 'claude.ai 拒绝了该 cookie，请重新登录并导出新的 cookie。',

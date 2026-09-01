@@ -13,6 +13,8 @@ const {
   listLogs,
   getGroups,
   getProxies,
+  listEndUserBans,
+  unbanEndUser,
   showError,
   showSuccess,
 } = vi.hoisted(() => ({
@@ -22,6 +24,8 @@ const {
   listLogs: vi.fn(),
   getGroups: vi.fn(),
   getProxies: vi.fn(),
+  listEndUserBans: vi.fn(),
+  unbanEndUser: vi.fn(),
   showError: vi.fn(),
   showSuccess: vi.fn(),
 }))
@@ -37,6 +41,11 @@ vi.mock('@/api/admin', () => ({
       deleteFlaggedHash: vi.fn(),
       clearFlaggedHashes: vi.fn(),
       unbanUser: vi.fn(),
+      listBlocks: vi.fn().mockResolvedValue([]),
+      unblock: vi.fn(),
+      listEndUserBans,
+      unbanEndUser,
+      clearEndUserBans: vi.fn(),
     },
     groups: {
       getAll: getGroups,
@@ -111,6 +120,9 @@ const baseConfig = (): ContentModerationConfig => ({
     type: 'all',
     models: [],
   },
+  cyber_policy_exclude_from_ban_count: false,
+  end_user_ban_enabled: false,
+  end_user_ban_threshold: 3,
 })
 
 const runtimeStatus = () => ({
@@ -205,6 +217,9 @@ describe('admin RiskControlView', () => {
     listLogs.mockResolvedValue({ items: [], total: 0, page: 1, page_size: 20, pages: 1 })
     getGroups.mockResolvedValue([])
     getProxies.mockResolvedValue([])
+    listEndUserBans.mockReset()
+    unbanEndUser.mockReset()
+    listEndUserBans.mockResolvedValue([])
     updateConfig.mockImplementation(async (payload: UpdateContentModerationConfig) => ({
       ...baseConfig(),
       ...payload,
@@ -414,5 +429,69 @@ describe('admin RiskControlView', () => {
       'max-h-[280px]',
       'overflow-y-auto',
     ]))
+  })
+
+  it('lists banned end users and unbans one on demand', async () => {
+    listEndUserBans.mockResolvedValue([
+      { identity: 'abc123'.repeat(11), masked: 'abc123abc123', violationCount: 4, reason: 'block', bannedAt: '2026-01-01T00:00:00Z' },
+    ])
+    unbanEndUser.mockResolvedValue({ identity: 'abc123'.repeat(11), masked: 'abc123abc123', deleted: true })
+
+    const wrapper = mount(RiskControlView, {
+      global: {
+        stubs: {
+          AppLayout: AppLayoutStub,
+          BaseDialog: BaseDialogStub,
+          Icon: true,
+          Select: true,
+          Toggle: true,
+          Pagination: true,
+          ModelWhitelistSelector: ModelWhitelistSelectorStub,
+          ProxySelector: true,
+        },
+      },
+    })
+
+    await flushPromises()
+
+    expect(listEndUserBans).toHaveBeenCalled()
+    expect(wrapper.text()).toContain('abc123abc123')
+    expect(wrapper.text()).toContain('4')
+
+    await findButtonByText(wrapper, 'admin.riskControl.endUserBans.unban').trigger('click')
+    await flushPromises()
+
+    expect(unbanEndUser).toHaveBeenCalledWith('abc123'.repeat(11))
+    expect(showSuccess).toHaveBeenCalledWith('admin.riskControl.endUserBans.unbanSuccess')
+    expect(wrapper.text()).not.toContain('abc123abc123')
+  })
+
+  it('shows an error and keeps the row when unbanning an end user fails', async () => {
+    listEndUserBans.mockResolvedValue([
+      { identity: 'deadbeef'.repeat(8), masked: 'deadbeefdead', violationCount: 5, reason: 'block', bannedAt: '2026-01-01T00:00:00Z' },
+    ])
+    unbanEndUser.mockRejectedValue(new Error('store unavailable'))
+
+    const wrapper = mount(RiskControlView, {
+      global: {
+        stubs: {
+          AppLayout: AppLayoutStub,
+          BaseDialog: BaseDialogStub,
+          Icon: true,
+          Select: true,
+          Toggle: true,
+          Pagination: true,
+          ModelWhitelistSelector: ModelWhitelistSelectorStub,
+          ProxySelector: true,
+        },
+      },
+    })
+
+    await flushPromises()
+    await findButtonByText(wrapper, 'admin.riskControl.endUserBans.unban').trigger('click')
+    await flushPromises()
+
+    expect(showError).toHaveBeenCalledWith('admin.riskControl.endUserBans.unbanFailed')
+    expect(wrapper.text()).toContain('deadbeefdead')
   })
 })

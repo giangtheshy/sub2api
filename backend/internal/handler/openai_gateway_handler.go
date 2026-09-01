@@ -443,6 +443,11 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 
 	// Generate session hash (header first; fallback to prompt_cache_key)
 	sessionHash := h.gatewayService.GenerateSessionHash(c, sessionHashBody)
+	// 终端用户永久封禁先判：只读 header，比会话屏蔽 key 便宜，且优先于临时冷却。
+	endUserIdentity, endUserRejected := h.rejectIfEndUserBanned(c, apiKey, reqModel, cyberBlockFormatResponses)
+	if endUserRejected {
+		return
+	}
 	if h.rejectIfCyberSessionBlocked(c, apiKey, sessionHashBody, reqModel, cyberBlockFormatResponses) {
 		return
 	}
@@ -586,7 +591,7 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 		if service.GetOpsCyberPolicy(c) != nil {
 			cyberBlockKeyHTTP = service.CyberSessionBlockKey(apiKey.ID, apiKeyUserID(apiKey), c, sessionHashBody)
 		}
-		h.recordCyberPolicyIfMarked(c, apiKey, account, subscription, reqModel, err != nil, cyberBlockKeyHTTP, clientRequestedUsageFields(c, channelMapping, reqModel, ""), service.HashUsageRequestPayload(body))
+		h.recordCyberPolicyIfMarked(c, apiKey, account, subscription, reqModel, err != nil, cyberBlockKeyHTTP, clientRequestedUsageFields(c, channelMapping, reqModel, ""), service.HashUsageRequestPayload(body), endUserIdentity)
 		forwardDurationMs := time.Since(forwardStart).Milliseconds()
 		upstreamLatencyMs, _ := getContextInt64(c, service.OpsUpstreamLatencyMsKey)
 		responseLatencyMs := forwardDurationMs
@@ -1020,6 +1025,11 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 	sessionHash := h.gatewayService.GenerateSessionHash(c, body)
 	promptCacheKey := h.gatewayService.ExtractSessionID(c, body)
 	sessionHash, promptCacheKey = resolveOpenAIMessagesMetadataSession(sessionHash, promptCacheKey, reqModel, body)
+	// 终端用户永久封禁先判：只读 header，比会话屏蔽 key 便宜，且优先于临时冷却。
+	endUserIdentity, endUserRejected := h.rejectIfEndUserBanned(c, apiKey, reqModel, cyberBlockFormatAnthropic)
+	if endUserRejected {
+		return
+	}
 	if h.rejectIfCyberSessionBlocked(c, apiKey, body, reqModel, cyberBlockFormatAnthropic) {
 		return
 	}
@@ -1134,7 +1144,7 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 		if service.GetOpsCyberPolicy(c) != nil {
 			cyberBlockKeyMsg = service.CyberSessionBlockKey(apiKey.ID, apiKeyUserID(apiKey), c, body)
 		}
-		h.recordCyberPolicyIfMarked(c, apiKey, account, subscription, reqModel, err != nil, cyberBlockKeyMsg, clientRequestedUsageFields(c, channelMappingMsg, reqModel, ""), service.HashUsageRequestPayload(body))
+		h.recordCyberPolicyIfMarked(c, apiKey, account, subscription, reqModel, err != nil, cyberBlockKeyMsg, clientRequestedUsageFields(c, channelMappingMsg, reqModel, ""), service.HashUsageRequestPayload(body), endUserIdentity)
 		forwardDurationMs := time.Since(forwardStart).Milliseconds()
 		upstreamLatencyMs, _ := getContextInt64(c, service.OpsUpstreamLatencyMsKey)
 		responseLatencyMs := forwardDurationMs
@@ -1754,6 +1764,17 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 		return
 	}
 
+	// 握手层终端用户永久封禁检查。WS 握手无 body，但 X-User-Id 就在握手 header 里，
+	// 所以本层照常工作。放在会话屏蔽之前：永久处罚优先于临时冷却。
+	endUserMasked, endUserIdentity := service.EndUserBanIdentity(apiKeyUserID(apiKey), c)
+	if endUserIdentity != "" && h.contentModerationService != nil &&
+		h.contentModerationService.IsEndUserBanned(c.Request.Context(), endUserIdentity) {
+		writeEndUserBannedWSError(c.Request.Context(), wsConn)
+		closeOpenAIClientWS(wsConn, coderws.StatusPolicyViolation, "end user banned by cyber-security policy")
+		h.logEndUserBanRejected(c, apiKey, reqModel, endUserMasked)
+		return
+	}
+
 	// F5a: 握手层会话屏蔽检查。WS 握手无 body，请求级信号仅来自握手 header
 	// （X-User-Id / session_id / conversation_id），与 (apiKey,user) 组合派生；
 	// 都缺失时退回纯 (apiKey,user)——握手不带标识不再等于绕过屏蔽。
@@ -2156,7 +2177,7 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 					turnUpstreamModel = turnRequestedModel
 				}
 				turnUsageFields := turnMapping.ToUsageFields(turnRequestedModel, turnUpstreamModel)
-				h.recordCyberPolicyIfMarked(c, apiKey, account, subscription, turnRequestedModel, turnErr != nil, cyberBlockKey, turnUsageFields, requestPayloadHash)
+				h.recordCyberPolicyIfMarked(c, apiKey, account, subscription, turnRequestedModel, turnErr != nil, cyberBlockKey, turnUsageFields, requestPayloadHash, endUserIdentity)
 				if service.GetOpsCyberPolicy(c) != nil {
 					cyberBlockedThisConn = true
 				}
@@ -2941,6 +2962,32 @@ func writeContentModerationWSError(ctx context.Context, conn *coderws.Conn, deci
 
 // writeCyberSessionBlockedWSError sends an error frame telling the client this
 // session is blocked by the cyber session block (F5a) before closing.
+// writeEndUserBannedWSError 与 writeCyberSessionBlockedWSError 同构，只换 code：
+// 客户端能区分"换个会话就好"与"这个终端用户被永久封禁"。
+func writeEndUserBannedWSError(ctx context.Context, conn *coderws.Conn) {
+	if conn == nil {
+		return
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	payload, err := json.Marshal(gin.H{
+		"event_id": "evt_end_user_banned",
+		"type":     "error",
+		"error": gin.H{
+			"type":    "permission_error",
+			"code":    "end_user_banned_by_cyber_policy",
+			"message": endUserBannedClientMsg,
+		},
+	})
+	if err != nil {
+		payload = []byte(`{"event_id":"evt_end_user_banned","type":"error","error":{"type":"permission_error","code":"end_user_banned_by_cyber_policy","message":"This session is blocked by cyber-security policy, please start a new session"}}`)
+	}
+	writeCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	_ = conn.Write(writeCtx, coderws.MessageText, payload)
+}
+
 func writeCyberSessionBlockedWSError(ctx context.Context, conn *coderws.Conn) {
 	if conn == nil {
 		return
@@ -3100,6 +3147,60 @@ const (
 	cyberBlockFormatAnthropic
 )
 
+// rejectIfEndUserBanned checks the permanent end-user ban table BEFORE account
+// selection. Sibling of rejectIfCyberSessionBlocked but INDEPENDENT: its own
+// switch (cfg.EndUserBanEnabled), no TTL, and identity derived from headers only
+// (cheaper than CyberSessionBlockKey, which parses the body) — hence it runs
+// first. Returns the identity for reuse at the recording stage, and rejected=true
+// when the response has already been written.
+// Fail-open: disabled switch / no X-User-Id / store error → false.
+func (h *OpenAIGatewayHandler) rejectIfEndUserBanned(c *gin.Context, apiKey *service.APIKey, model string, format cyberSessionBlockFormat) (string, bool) {
+	if h == nil || h.contentModerationService == nil || apiKey == nil {
+		return "", false
+	}
+	masked, identity := service.EndUserBanIdentity(apiKeyUserID(apiKey), c)
+	if identity == "" {
+		return "", false
+	}
+	if !h.contentModerationService.IsEndUserBanned(c.Request.Context(), identity) {
+		return identity, false
+	}
+	// body-signal compact 心跳可能已把响应头提交为 200：以 response.failed 终止事件
+	// 回传；未提交时停拍后照常写 JSON（与会话屏蔽同一处理，见 #3887）。
+	if service.StopOpenAICompactSSEKeepaliveCommitted(c) {
+		service.MarkOpsStreamError(c, "permission_error", endUserBannedClientMsg, http.StatusForbidden)
+		if writeResponsesFailedSSE(c, "permission_error", endUserBannedClientMsg) {
+			h.logEndUserBanRejected(c, apiKey, model, masked)
+			return identity, true
+		}
+	}
+	switch format {
+	case cyberBlockFormatAnthropic:
+		c.JSON(http.StatusForbidden, gin.H{"type": "error", "error": gin.H{
+			"type":    "permission_error",
+			"message": endUserBannedClientMsg,
+		}})
+	default: // cyberBlockFormatResponses 与 cyberBlockFormatChat：同构的 OpenAI error envelope
+		c.JSON(http.StatusForbidden, gin.H{"error": gin.H{
+			"type":    "permission_error",
+			"code":    "end_user_banned_by_cyber_policy",
+			"message": endUserBannedClientMsg,
+		}})
+	}
+	h.logEndUserBanRejected(c, apiKey, model, masked)
+	return identity, true
+}
+
+func (h *OpenAIGatewayHandler) logEndUserBanRejected(c *gin.Context, apiKey *service.APIKey, model, masked string) {
+	service.MarkOpsClientBusinessLimited(c, service.OpsClientBusinessLimitedReasonLocalPolicyDenied)
+	logger.L().With(zap.String("component", "handler.openai_gateway.end_user_ban")).
+		Info("gateway.request_rejected_by_end_user_ban",
+			zap.Int64("api_key_id", apiKey.ID),
+			zap.String("identity", masked),
+			zap.String("model", model),
+		)
+}
+
 // rejectIfCyberSessionBlocked checks the session-block table BEFORE account
 // selection. Returns true when the request was rejected (response already
 // written + ops entry enqueued). Fail-open: disabled switch / empty key /
@@ -3186,7 +3287,7 @@ func (h *OpenAIGatewayHandler) enqueueCyberSessionBlockedOpsEntry(c *gin.Context
 // 并在 forward 返回错误时写一条 tokens=0 用量行。标记由 gateway 服务层在透传 cyber 后设置；
 // 当前请求已发给用户，本方法只做事后记录，不影响响应。forwardErrored 为 true 时才写用量行，
 // 避免与正常 RecordUsage(forward 成功路径)重复。每请求至多记录一次。
-func (h *OpenAIGatewayHandler) recordCyberPolicyIfMarked(c *gin.Context, apiKey *service.APIKey, account *service.Account, subscription *service.UserSubscription, model string, forwardErrored bool, cyberBlockKey string, channelFields service.ChannelUsageFields, requestPayloadHash string) {
+func (h *OpenAIGatewayHandler) recordCyberPolicyIfMarked(c *gin.Context, apiKey *service.APIKey, account *service.Account, subscription *service.UserSubscription, model string, forwardErrored bool, cyberBlockKey string, channelFields service.ChannelUsageFields, requestPayloadHash string, endUserIdentity string) {
 	mark := service.GetOpsCyberPolicy(c)
 	if mark == nil {
 		return
@@ -3273,7 +3374,9 @@ func (h *OpenAIGatewayHandler) recordCyberPolicyIfMarked(c *gin.Context, apiKey 
 		defer cancel()
 		if cmSvc != nil {
 			cmSvc.RecordCyberPolicyEvent(ctx, service.CyberPolicyRecordInput{
-				RequestID:       requestID,
+				RequestID: requestID,
+				// 空串表示请求没带 X-User-Id：终端用户层不参与判定，交账号层兜底。
+				EndUserIdentity: endUserIdentity,
 				UserID:          userID,
 				UserEmail:       userEmail,
 				APIKeyID:        apiKeyID,

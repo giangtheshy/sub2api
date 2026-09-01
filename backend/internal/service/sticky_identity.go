@@ -77,3 +77,48 @@ func StickyIdentity(apiKeyID, userID int64, c *gin.Context, body []byte) (kind s
 	key = hex.EncodeToString(sum[:])
 	return kind, key[:12], key
 }
+
+// endUserBanIdentityPrefix 让终端用户封禁 key 与 StickyIdentity 的会话屏蔽 key
+// 永不碰撞——两者用途不同（永久封禁 vs TTL 冷却），绝不能互相命中。
+const endUserBanIdentityPrefix = "end_user"
+
+// EndUserBanIdentity 派生"终端用户"的永久封禁标识。
+//
+// 与 StickyIdentity 有两处**刻意**不同，都是为了让封禁真正跑不掉：
+//
+//  1. 不混入 session：一个 session 只是一次会话，换个对话就换 key。
+//     会话屏蔽可以接受这种逃逸（它只是冷却），永久封禁不行。
+//  2. 不混入 apiKeyID：只用 userID。转售商轮换或新增 Key 是常规操作，
+//     若把 Key 混进来，违规方换一把 Key 就解封了。
+//
+// 只认客户端声明的 X-User-Id。拿不到就返回空串，调用方必须跳过本层而不是
+// 退化到 (apiKey,user) 兜底——那等于封掉整把 Key 上的所有终端客户，
+// 正是本功能要避免的连坐。
+//
+// 刻意不采用 metadata.user_id（Claude Code 的 device_id）作为封禁标识：
+// 请求经代理转发时，代理的 cloak 层可能把它改写成"每个上游 Key 一个固定值"
+// （所有终端用户撞成同一个 → 集体封禁），也可能每次请求随机生成
+// （永远累计不到阈值）。两种都会让封禁失准。
+//
+// 返回值：
+//   - masked：可安全展示的短摘要（哈希前缀），绝不含原始标识；
+//   - key：封禁表主键，sha256("end_user|u<userID>|x:<X-User-Id>")。
+func EndUserBanIdentity(userID int64, c *gin.Context) (masked string, key string) {
+	if c == nil {
+		return "", ""
+	}
+	xUserID := ""
+	for _, header := range stickyIdentityUserHeaders {
+		if v := strings.TrimSpace(c.GetHeader(header)); v != "" {
+			xUserID = v
+			break
+		}
+	}
+	if xUserID == "" {
+		return "", ""
+	}
+	sum := sha256.Sum256([]byte(fmt.Sprintf("%s|u%d|x:%s", endUserBanIdentityPrefix, userID, xUserID)))
+	key = hex.EncodeToString(sum[:])
+	return key[:12], key
+}
+

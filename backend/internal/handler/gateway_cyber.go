@@ -33,6 +33,7 @@ func buildAnthropicRefusalRecordInput(
 	requestID string,
 	endpoint string,
 	model string,
+	endUserIdentity string,
 ) service.CyberPolicyRecordInput {
 	in := service.CyberPolicyRecordInput{
 		Category:        anthropicRefusalCategory(mark.Signal),
@@ -42,6 +43,8 @@ func buildAnthropicRefusalRecordInput(
 		Model:           model,
 		UpstreamMessage: mark.Message,
 		UpstreamStatus:  mark.UpstreamStatus,
+		// 空串表示请求没带 X-User-Id：终端用户层不参与判定，交账号层兜底。
+		EndUserIdentity: endUserIdentity,
 	}
 	// 账号信息进 body 而非 message：运维要能一眼看出是哪个上游号被判罚，
 	// 但不该污染发给用户的提示文案。
@@ -77,6 +80,7 @@ func (h *GatewayHandler) recordAnthropicRefusalIfMarked(
 	account *service.Account,
 	model string,
 	blockMeta service.CyberBlockMeta,
+	endUserIdentity string,
 ) {
 	if h == nil || c == nil {
 		return
@@ -100,7 +104,7 @@ func (h *GatewayHandler) recordAnthropicRefusalIfMarked(
 		requestPath = c.Request.URL.Path
 	}
 	recordInput := buildAnthropicRefusalRecordInput(
-		mark, apiKey, c.Writer.Header().Get("X-Request-Id"), GetInboundEndpoint(c), model,
+		mark, apiKey, c.Writer.Header().Get("X-Request-Id"), GetInboundEndpoint(c), model, endUserIdentity,
 	)
 	recordInput.Endpoint = defaultString(recordInput.Endpoint, requestPath)
 
@@ -173,6 +177,52 @@ func (h *GatewayHandler) rejectIfCyberSessionBlockedNative(
 			zap.String("model", model),
 		)
 	return meta, true
+}
+
+// endUserBannedClientMsg 与会话屏蔽同文案（网关无 i18n 协商通道）。
+const endUserBannedClientMsg = cyberSessionBlockedClientMsg
+
+// rejectIfEndUserBannedNative 在选号之前检查终端用户永久封禁表。
+//
+// 与 rejectIfCyberSessionBlockedNative 并列但**独立**：
+//   - 独立开关（cfg.EndUserBanEnabled），会话屏蔽关掉时本层照样工作；
+//   - 派生标识只读 header，比 CyberSessionBlockKey（gjson 解 body + sha256）便宜，
+//     所以放在它前面；
+//   - 无 TTL——换会话、换 Key 都逃不掉，只能管理员手动解封。
+//
+// 返回 identity 供收尾阶段复用（避免二次派生），rejected=true 表示响应已写出。
+// fail-open：开关关闭、无 X-User-Id、依赖缺失或查询出错都放行。
+func (h *GatewayHandler) rejectIfEndUserBannedNative(
+	c *gin.Context,
+	apiKey *service.APIKey,
+	model string,
+) (string, bool) {
+	if h == nil || c == nil || apiKey == nil || h.contentModerationService == nil {
+		return "", false
+	}
+	masked, identity := service.EndUserBanIdentity(apiKeyUserID(apiKey), c)
+	if identity == "" {
+		return "", false
+	}
+	ctx := context.Background()
+	if c.Request != nil {
+		ctx = c.Request.Context()
+	}
+	if !h.contentModerationService.IsEndUserBanned(ctx, identity) {
+		return identity, false
+	}
+	service.MarkOpsClientBusinessLimited(c, service.OpsClientBusinessLimitedReasonLocalPolicyDenied)
+	c.JSON(http.StatusForbidden, gin.H{"type": "error", "error": gin.H{
+		"type":    "permission_error",
+		"message": endUserBannedClientMsg,
+	}})
+	logger.L().With(zap.String("component", "handler.gateway.end_user_ban")).
+		Info("gateway.native_request_rejected_by_end_user_ban",
+			zap.Int64("api_key_id", apiKey.ID),
+			zap.String("identity", masked),
+			zap.String("model", model),
+		)
+	return identity, true
 }
 
 // defaultString 返回第一个非空值。
