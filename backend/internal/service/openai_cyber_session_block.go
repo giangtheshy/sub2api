@@ -24,14 +24,29 @@ type CyberSessionBlockStore interface {
 }
 
 // CyberBlockMeta 是一条屏蔽记录的可展示元信息。
-// Masked 是标识哈希的短前缀——原始 X-User-Id / session id 绝不落库或上屏。
+//
+// 标识分两层：Masked 是 key 哈希的短前缀（不可逆，唯一标识这条记录）；
+// MaskedUserID/MaskedSessionID 是原始信号的部分遮蔽串（如 usr_*******c21），
+// 让管理员在客户申诉时能比对首尾确认主体。完整的原始 X-User-Id / session id
+// 仍然绝不落库。
+//
+// UserID/APIKeyID 是屏蔽范围所属的平台侧主体；UserEmail/APIKeyName 在写入时
+// 一并快照。刻意存冗余而不是列表时反查：屏蔽表是 Redis 缓存，管理端列表不该
+// 为了两个展示字段而对每条记录打 DB；且快照保留了"当时是谁"，即使之后用户或
+// Key 被删除，管理员仍能看懂这条记录。
 type CyberBlockMeta struct {
-	Key       string    `json:"key"`
-	Kind      string    `json:"kind"`
-	Masked    string    `json:"masked"`
-	Signal    string    `json:"signal"`
-	BlockedAt time.Time `json:"blockedAt"`
-	ExpiresAt time.Time `json:"expiresAt"`
+	Key             string    `json:"key"`
+	Kind            string    `json:"kind"`
+	Masked          string    `json:"masked"`
+	Signal          string    `json:"signal"`
+	UserID          int64     `json:"userId,omitempty"`
+	UserEmail       string    `json:"userEmail,omitempty"`
+	APIKeyID        int64     `json:"apiKeyId,omitempty"`
+	APIKeyName      string    `json:"apiKeyName,omitempty"`
+	MaskedUserID    string    `json:"maskedUserId,omitempty"`
+	MaskedSessionID string    `json:"maskedSessionId,omitempty"`
+	BlockedAt       time.Time `json:"blockedAt"`
+	ExpiresAt       time.Time `json:"expiresAt"`
 }
 
 // CyberSessionBlockKey 派生屏蔽 key，委托 StickyIdentity 组合派生：
@@ -48,6 +63,41 @@ type CyberBlockMeta struct {
 func CyberSessionBlockKey(apiKeyID, userID int64, c *gin.Context, body []byte) string {
 	_, _, key := StickyIdentity(apiKeyID, userID, c, body)
 	return key
+}
+
+// CyberSessionBlockMeta 派生屏蔽 key 并一并组装管理端展示所需的元信息。
+//
+// 与 CyberSessionBlockKey 派生同一把 key，区别只是多带回主体归属（用户、Key）
+// 与部分遮蔽的原始标识。OpenAI/Codex 路径用它替代裸 key，
+// 使这些路径产生的屏蔽项在管理端与 Anthropic 原生路径展示一致。
+//
+// apiKey 可为 nil（调用方尚未认证完成时），此时只留下请求级信号。
+func CyberSessionBlockMeta(apiKey *APIKey, c *gin.Context, body []byte) CyberBlockMeta {
+	var apiKeyID, userID int64
+	var apiKeyName, userEmail string
+	if apiKey != nil {
+		apiKeyID = apiKey.ID
+		apiKeyName = apiKey.Name
+		userID = apiKey.UserID
+		if apiKey.User != nil {
+			if userID == 0 {
+				userID = apiKey.User.ID
+			}
+			userEmail = apiKey.User.Email
+		}
+	}
+	info := StickyIdentityDetailed(apiKeyID, userID, c, body)
+	return CyberBlockMeta{
+		Key:             info.Key,
+		Kind:            info.Kind,
+		Masked:          info.Masked,
+		UserID:          userID,
+		UserEmail:       userEmail,
+		APIKeyID:        apiKeyID,
+		APIKeyName:      apiKeyName,
+		MaskedUserID:    info.MaskedUserID,
+		MaskedSessionID: info.MaskedSessionID,
+	}
 }
 
 // cyberSessionBlockStore 探测 cache 是否具备屏蔽存储能力。

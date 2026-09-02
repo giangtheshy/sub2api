@@ -242,14 +242,37 @@
             </button>
           </div>
 
+          <div class="border-b border-gray-100 px-6 py-3 dark:border-dark-700">
+            <div class="relative max-w-md">
+              <input
+                v-model="blocksSearch"
+                type="search"
+                class="input w-full pr-9"
+                :placeholder="t('admin.riskControl.blocks.searchPlaceholder')"
+                @input="onBlocksSearchInput"
+              />
+              <button
+                v-if="blocksSearch"
+                type="button"
+                class="absolute inset-y-0 right-0 flex items-center px-3 text-gray-400 hover:text-gray-600 dark:hover:text-gray-200"
+                :aria-label="t('admin.riskControl.blocks.searchClear')"
+                @click="clearBlocksSearch"
+              >
+                <Icon name="x" size="sm" />
+              </button>
+            </div>
+          </div>
+
           <div v-if="blocks.length === 0" class="px-6 py-8 text-center text-sm text-gray-500 dark:text-gray-400">
-            {{ t('admin.riskControl.blocks.empty') }}
+            {{ blocksSearch ? t('admin.riskControl.blocks.emptySearch') : t('admin.riskControl.blocks.empty') }}
           </div>
           <div v-else class="overflow-x-auto">
             <table class="min-w-full divide-y divide-gray-200 dark:divide-dark-700">
               <thead class="bg-gray-50 dark:bg-dark-800">
                 <tr>
                   <th class="px-5 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500 dark:text-gray-400">{{ t('admin.riskControl.blocks.identity') }}</th>
+                  <th class="px-5 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500 dark:text-gray-400">{{ t('admin.riskControl.blocks.user') }}</th>
+                  <th class="px-5 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500 dark:text-gray-400">{{ t('admin.riskControl.blocks.apiKey') }}</th>
                   <th class="px-5 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500 dark:text-gray-400">{{ t('admin.riskControl.blocks.kind') }}</th>
                   <th class="px-5 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500 dark:text-gray-400">{{ t('admin.riskControl.blocks.signal') }}</th>
                   <th class="px-5 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500 dark:text-gray-400">{{ t('admin.riskControl.blocks.blockedAt') }}</th>
@@ -259,7 +282,17 @@
               </thead>
               <tbody class="divide-y divide-gray-100 dark:divide-dark-700">
                 <tr v-for="item in blocks" :key="item.key">
-                  <td class="px-5 py-3 font-mono text-sm text-gray-900 dark:text-white">{{ item.masked || item.key.slice(0, 12) }}</td>
+                  <td class="px-5 py-3">
+                    <div class="font-mono text-sm text-gray-900 dark:text-white">{{ blockIdentityLabel(item) }}</div>
+                    <div class="mt-0.5 font-mono text-xs text-gray-400 dark:text-gray-500" :title="item.key">
+                      {{ item.masked || item.key.slice(0, 12) }}
+                    </div>
+                  </td>
+                  <td class="px-5 py-3">
+                    <div class="text-sm text-gray-900 dark:text-white">{{ item.userEmail || '-' }}</div>
+                    <div v-if="item.userId" class="mt-0.5 text-xs text-gray-400 dark:text-gray-500">UID {{ item.userId }}</div>
+                  </td>
+                  <td class="px-5 py-3 text-sm text-gray-600 dark:text-gray-300">{{ item.apiKeyName || '-' }}</td>
                   <td class="px-5 py-3 text-sm text-gray-600 dark:text-gray-300">{{ blockKindLabel(item.kind) }}</td>
                   <td class="px-5 py-3 text-sm text-gray-600 dark:text-gray-300">{{ blockSignalLabel(item.signal) }}</td>
                   <td class="px-5 py-3 text-sm text-gray-500 dark:text-gray-400">{{ formatBlockTime(item.blockedAt) }}</td>
@@ -1321,6 +1354,8 @@ const apiKeyTesting = ref(false)
 const hashActionLoading = ref(false)
 const blocksLoading = ref(false)
 const blocks = ref<CyberBlockItem[]>([])
+const blocksSearch = ref('')
+let blocksSearchTimer: ReturnType<typeof setTimeout> | null = null
 const unblockingKey = ref<string | null>(null)
 const endUserBansLoading = ref(false)
 const endUserBans = ref<EndUserBanItem[]>([])
@@ -2523,12 +2558,41 @@ function formatBlockTime(value: string): string {
 async function loadBlocks() {
   blocksLoading.value = true
   try {
-    blocks.value = await adminAPI.riskControl.listBlocks()
+    blocks.value = await adminAPI.riskControl.listBlocks(blocksSearch.value)
   } catch (err) {
     appStore.showError(extractApiErrorMessage(err, t('admin.riskControl.blocks.loadFailed')))
   } finally {
     blocksLoading.value = false
   }
+}
+
+// 输入防抖：屏蔽表是 Redis 里的小集合，过滤在服务端内存完成，
+// 300ms 足够避免逐字符打请求，又不至于让管理员觉得卡顿。
+function onBlocksSearchInput() {
+  if (blocksSearchTimer) clearTimeout(blocksSearchTimer)
+  blocksSearchTimer = setTimeout(() => {
+    blocksSearchTimer = null
+    void loadBlocks()
+  }, 300)
+}
+
+function clearBlocksSearch() {
+  if (blocksSearchTimer) {
+    clearTimeout(blocksSearchTimer)
+    blocksSearchTimer = null
+  }
+  blocksSearch.value = ''
+  void loadBlocks()
+}
+
+// 屏蔽项的主展示标识：优先显示遮蔽后的终端标识，
+// 退回哈希前缀（旧记录或 apikey_user 兜底层没有请求级标识）。
+function blockIdentityLabel(item: CyberBlockItem): string {
+  const parts: string[] = []
+  if (item.maskedUserId) parts.push(item.maskedUserId)
+  if (item.maskedSessionId) parts.push(item.maskedSessionId)
+  if (parts.length > 0) return parts.join(' · ')
+  return item.masked || item.key.slice(0, 12)
 }
 
 async function unblockIdentity(item: CyberBlockItem) {

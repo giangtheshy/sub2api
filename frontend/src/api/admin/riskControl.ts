@@ -238,12 +238,26 @@ export interface ClearFlaggedHashesResponse {
   deleted: number
 }
 
-/** 一条仍然生效的会话屏蔽记录。masked 是标识哈希的短前缀，绝不含原始 user/session id。 */
+/**
+ * 一条仍然生效的会话屏蔽记录。
+ *
+ * 标识分三层，由粗到细：userEmail/apiKeyName 是平台侧主体；
+ * maskedUserId/maskedSessionId 是部分遮蔽的终端标识（可与客户提供的 ID 比对首尾）；
+ * masked/key 是不可逆哈希。完整的原始 X-User-Id / session id 从不离开网关。
+ *
+ * 归属字段在屏蔽写入时快照，升级前产生的旧记录没有这些字段（可选）。
+ */
 export interface CyberBlockItem {
   key: string
   kind: string
   masked: string
   signal: string
+  userId?: number
+  userEmail?: string
+  apiKeyId?: number
+  apiKeyName?: string
+  maskedUserId?: string
+  maskedSessionId?: string
   blockedAt: string
   expiresAt: string
 }
@@ -328,8 +342,9 @@ export async function clearFlaggedHashes(): Promise<ClearFlaggedHashesResponse> 
   return data
 }
 
-export async function listBlocks(): Promise<CyberBlockItem[]> {
-  const { data } = await apiClient.get<CyberBlockItem[]>('/admin/risk-control/blocks')
+export async function listBlocks(search?: string): Promise<CyberBlockItem[]> {
+  const params = search?.trim() ? { search: search.trim() } : undefined
+  const { data } = await apiClient.get<CyberBlockItem[]>('/admin/risk-control/blocks', { params })
   return data ?? []
 }
 

@@ -28,6 +28,57 @@ const (
 // 与 Anthropic/OpenAI 生态常见约定一致（X-User-Id 为主）。
 var stickyIdentityUserHeaders = []string{"X-User-Id", "X-User-ID", "x-user-id"}
 
+// maskedIdentityStars 是遮蔽段的固定星号数。
+// 固定而非按原长度取——否则展示串长度会泄露原值长度。
+const maskedIdentityStars = "*******"
+
+// MaskIdentityValue 把原始标识（X-User-Id / session id）转成可展示的部分遮蔽串。
+//
+// 目的是"能对账、不能读全"：管理员收到客户申诉时可以比对首尾片段确认是不是同一个人，
+// 但屏幕上和 Redis 里都不出现完整的终端用户标识。
+//
+// 分档保证任何长度都至少遮蔽 4 个字符，短值直接全遮蔽：
+//
+//	≤4    → 全星号
+//	5-8   → 首 1 + 尾 1
+//	9-11  → 首 2 + 尾 2
+//	≥12   → 首 4 + 尾 4
+//
+// 按 rune 切分，避免把多字节字符截断成乱码。
+func MaskIdentityValue(v string) string {
+	v = strings.TrimSpace(v)
+	if v == "" {
+		return ""
+	}
+	runes := []rune(v)
+	n := len(runes)
+	var head, tail int
+	switch {
+	case n <= 4:
+		return strings.Repeat("*", n)
+	case n <= 8:
+		head, tail = 1, 1
+	case n <= 11:
+		head, tail = 2, 2
+	default:
+		head, tail = 4, 4
+	}
+	return string(runes[:head]) + maskedIdentityStars + string(runes[n-tail:])
+}
+
+// StickyIdentityInfo 是一次标识派生的完整结果。
+//
+// Key/Masked 是不可逆哈希（屏蔽表主键与短摘要）；MaskedUserID/MaskedSessionID
+// 是原始信号的部分遮蔽展示串，仅用于管理端排障。原始值本身不在此结构中，
+// 也不会离开派生现场。
+type StickyIdentityInfo struct {
+	Kind            string
+	Masked          string
+	Key             string
+	MaskedUserID    string
+	MaskedSessionID string
+}
+
 // StickyIdentity 派生请求的"违规主体"标识。
 //
 // 关键设计：把所有可用信号 **组合** 进同一把 key，而不是挑一层用。
@@ -43,6 +94,16 @@ var stickyIdentityUserHeaders = []string{"X-User-Id", "X-User-ID", "x-user-id"}
 //   - masked：可安全展示的短摘要（哈希前缀），绝不含原始标识；
 //   - key：屏蔽表主键，sha256(kind|apiKeyID|userID|signals…)，永不为空。
 func StickyIdentity(apiKeyID, userID int64, c *gin.Context, body []byte) (kind string, masked string, key string) {
+	info := StickyIdentityDetailed(apiKeyID, userID, c, body)
+	return info.Kind, info.Masked, info.Key
+}
+
+// StickyIdentityDetailed 与 StickyIdentity 派生同一把 key，额外返回参与派生的
+// 原始信号的部分遮蔽串，供管理端展示"到底是谁被挡了"。
+//
+// 哈希输入与 StickyIdentity 完全一致——遮蔽串只是附加的展示信息，
+// 绝不参与 key 计算，否则历史屏蔽项会全部失配。
+func StickyIdentityDetailed(apiKeyID, userID int64, c *gin.Context, body []byte) StickyIdentityInfo {
 	xUserID := ""
 	if c != nil {
 		for _, header := range stickyIdentityUserHeaders {
@@ -54,6 +115,7 @@ func StickyIdentity(apiKeyID, userID int64, c *gin.Context, body []byte) (kind s
 	}
 	sessionID := explicitOpenAISessionID(c, body)
 
+	var kind string
 	var signals strings.Builder
 	switch {
 	case xUserID != "" && sessionID != "":
@@ -74,8 +136,14 @@ func StickyIdentity(apiKeyID, userID int64, c *gin.Context, body []byte) (kind s
 	// apiKeyID/userID 始终混入：跨 Key、跨用户隔离，
 	// 不同租户即使用同一个 session_id 也不会互相牵连。
 	sum := sha256.Sum256([]byte(fmt.Sprintf("%s|k%d|u%d|%s", kind, apiKeyID, userID, signals.String())))
-	key = hex.EncodeToString(sum[:])
-	return kind, key[:12], key
+	key := hex.EncodeToString(sum[:])
+	return StickyIdentityInfo{
+		Kind:            kind,
+		Masked:          key[:12],
+		Key:             key,
+		MaskedUserID:    MaskIdentityValue(xUserID),
+		MaskedSessionID: MaskIdentityValue(sessionID),
+	}
 }
 
 // endUserBanIdentityPrefix 让终端用户封禁 key 与 StickyIdentity 的会话屏蔽 key

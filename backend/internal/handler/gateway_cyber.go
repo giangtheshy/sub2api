@@ -156,12 +156,11 @@ func (h *GatewayHandler) rejectIfCyberSessionBlockedNative(
 	if enabled, _ := h.openAIGatewayService.CyberSessionBlockRuntime(ctx); !enabled {
 		return empty, false
 	}
-	kind, masked, key := service.StickyIdentity(apiKey.ID, apiKeyUserID(apiKey), c, body)
-	if key == "" {
+	meta := service.CyberSessionBlockMeta(apiKey, c, body)
+	if meta.Key == "" {
 		return empty, false
 	}
-	meta := service.CyberBlockMeta{Key: key, Kind: kind, Masked: masked}
-	if !h.openAIGatewayService.IsCyberSessionBlocked(ctx, key) {
+	if !h.openAIGatewayService.IsCyberSessionBlocked(ctx, meta.Key) {
 		return meta, false
 	}
 	service.MarkOpsClientBusinessLimited(c, service.OpsClientBusinessLimitedReasonLocalPolicyDenied)
@@ -172,8 +171,8 @@ func (h *GatewayHandler) rejectIfCyberSessionBlockedNative(
 	logger.L().With(zap.String("component", "handler.gateway.anthropic_refusal")).
 		Info("gateway.native_request_rejected_by_cyber_block",
 			zap.Int64("api_key_id", apiKey.ID),
-			zap.String("identity_kind", kind),
-			zap.String("identity", masked),
+			zap.String("identity_kind", meta.Kind),
+			zap.String("identity", meta.Masked),
 			zap.String("model", model),
 		)
 	return meta, true

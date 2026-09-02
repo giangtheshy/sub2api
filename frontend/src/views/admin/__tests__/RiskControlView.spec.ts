@@ -13,6 +13,7 @@ const {
   listLogs,
   getGroups,
   getProxies,
+  listBlocks,
   listEndUserBans,
   unbanEndUser,
   showError,
@@ -24,6 +25,7 @@ const {
   listLogs: vi.fn(),
   getGroups: vi.fn(),
   getProxies: vi.fn(),
+  listBlocks: vi.fn(),
   listEndUserBans: vi.fn(),
   unbanEndUser: vi.fn(),
   showError: vi.fn(),
@@ -41,7 +43,7 @@ vi.mock('@/api/admin', () => ({
       deleteFlaggedHash: vi.fn(),
       clearFlaggedHashes: vi.fn(),
       unbanUser: vi.fn(),
-      listBlocks: vi.fn().mockResolvedValue([]),
+      listBlocks,
       unblock: vi.fn(),
       listEndUserBans,
       unbanEndUser,
@@ -220,6 +222,8 @@ describe('admin RiskControlView', () => {
     listEndUserBans.mockReset()
     unbanEndUser.mockReset()
     listEndUserBans.mockResolvedValue([])
+    listBlocks.mockReset()
+    listBlocks.mockResolvedValue([])
     updateConfig.mockImplementation(async (payload: UpdateContentModerationConfig) => ({
       ...baseConfig(),
       ...payload,
@@ -493,5 +497,120 @@ describe('admin RiskControlView', () => {
 
     expect(showError).toHaveBeenCalledWith('admin.riskControl.endUserBans.unbanFailed')
     expect(wrapper.text()).toContain('deadbeefdead')
+  })
+
+  it('renders owner and masked identity columns for active session blocks', async () => {
+    listBlocks.mockResolvedValue([
+      {
+        key: 'ab'.repeat(32),
+        kind: 'x_user_id',
+        masked: 'abababababab',
+        signal: 'refusal',
+        userId: 7,
+        userEmail: 'reseller@example.com',
+        apiKeyId: 21,
+        apiKeyName: 'prod-key',
+        maskedUserId: 'usr_*******ec21',
+        blockedAt: '2026-01-01T00:00:00Z',
+        expiresAt: '2026-01-01T01:00:00Z',
+      },
+    ])
+
+    const wrapper = mount(RiskControlView, {
+      global: {
+        stubs: {
+          AppLayout: AppLayoutStub,
+          BaseDialog: BaseDialogStub,
+          Icon: true,
+          Select: true,
+          Toggle: true,
+          Pagination: true,
+          ModelWhitelistSelector: ModelWhitelistSelectorStub,
+          ProxySelector: true,
+        },
+      },
+    })
+
+    await flushPromises()
+
+    const text = wrapper.text()
+    expect(text).toContain('reseller@example.com')
+    expect(text).toContain('prod-key')
+    expect(text).toContain('usr_*******ec21')
+    // 哈希前缀仍作为次要标识保留，便于与解封接口对账。
+    expect(text).toContain('abababababab')
+  })
+
+  it('falls back to the hash prefix when a block has no request-level identity', async () => {
+    listBlocks.mockResolvedValue([
+      {
+        key: 'cd'.repeat(32),
+        kind: 'apikey_user',
+        masked: 'cdcdcdcdcdcd',
+        signal: 'cyber_policy',
+        userId: 9,
+        userEmail: 'owner@example.com',
+        apiKeyId: 3,
+        apiKeyName: 'fallback-key',
+        blockedAt: '2026-01-01T00:00:00Z',
+        expiresAt: '2026-01-01T01:00:00Z',
+      },
+    ])
+
+    const wrapper = mount(RiskControlView, {
+      global: {
+        stubs: {
+          AppLayout: AppLayoutStub,
+          BaseDialog: BaseDialogStub,
+          Icon: true,
+          Select: true,
+          Toggle: true,
+          Pagination: true,
+          ModelWhitelistSelector: ModelWhitelistSelectorStub,
+          ProxySelector: true,
+        },
+      },
+    })
+
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('cdcdcdcdcdcd')
+    expect(wrapper.text()).toContain('owner@example.com')
+  })
+
+  it('sends the search term to the API when filtering active session blocks', async () => {
+    vi.useFakeTimers()
+    try {
+      const wrapper = mount(RiskControlView, {
+        global: {
+          stubs: {
+            AppLayout: AppLayoutStub,
+            BaseDialog: BaseDialogStub,
+            Icon: true,
+            Select: true,
+            Toggle: true,
+            Pagination: true,
+            ModelWhitelistSelector: ModelWhitelistSelectorStub,
+            ProxySelector: true,
+          },
+        },
+      })
+
+      await flushPromises()
+      listBlocks.mockClear()
+
+      const input = wrapper.get('input[type="search"]')
+      await input.setValue('reseller@example.com')
+
+      // 防抖窗口内不应发请求。
+      expect(listBlocks).not.toHaveBeenCalled()
+
+      vi.advanceTimersByTime(300)
+      await flushPromises()
+
+      expect(listBlocks).toHaveBeenCalledWith('reseller@example.com')
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })
