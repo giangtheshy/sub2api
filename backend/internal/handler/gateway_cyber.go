@@ -121,8 +121,11 @@ func (h *GatewayHandler) recordAnthropicRefusalIfMarked(
 		}
 		// 会话屏蔽是"下一次请求前"的本地防线：同一违规主体在 TTL 内直接被拒，
 		// 不再消耗上游账号的风控额度。开关关闭时 MarkCyberSessionBlocked 自身会跳过。
+		// Anthropic 原生 body 不是 OpenAI transcript 形状，上游的 transcript 前缀
+		// key 在这里派生不出有意义的结果，因此只写本路径自己的 sticky key，
+		// 保持与合并前完全一致的屏蔽范围。
 		if blockOwner != nil && blockMeta.Key != "" {
-			blockOwner.MarkCyberSessionBlockedWithMeta(ctx, blockMeta.Key, blockMeta)
+			blockOwner.MarkCyberSessionBlockedWithMeta(ctx, "", []string{blockMeta.Key}, blockMeta)
 		}
 		logger.L().With(zap.String("component", "handler.gateway.anthropic_refusal")).
 			Info("gateway.anthropic_hard_refusal_recorded",

@@ -26,7 +26,7 @@ func TestListActiveBlocks_ReturnsMarkedIdentities(t *testing.T) {
 	ctx := context.Background()
 	svc, _ := newCyberBlockAdminService("true")
 
-	svc.MarkCyberSessionBlockedWithMeta(ctx, "k1", CyberBlockMeta{
+	svc.MarkCyberSessionBlockedWithMeta(ctx, "", []string{"k1"}, CyberBlockMeta{
 		Kind: StickyIdentityKindXUserID, Masked: "abc123", Signal: AnthropicRefusalSignalRefusal,
 	})
 
@@ -43,7 +43,7 @@ func TestListActiveBlocks_ReturnsMarkedIdentities(t *testing.T) {
 func TestUnblockIdentity_RemovesBlock(t *testing.T) {
 	ctx := context.Background()
 	svc, _ := newCyberBlockAdminService("true")
-	svc.MarkCyberSessionBlockedWithMeta(ctx, "k1", CyberBlockMeta{Kind: StickyIdentityKindSession})
+	svc.MarkCyberSessionBlockedWithMeta(ctx, "", []string{"k1"}, CyberBlockMeta{Kind: StickyIdentityKindSession})
 	require.True(t, svc.IsCyberSessionBlocked(ctx, "k1"))
 
 	require.NoError(t, svc.UnblockIdentity(ctx, "k1"))
@@ -58,7 +58,7 @@ func TestUnblockIdentity_RemovesBlock(t *testing.T) {
 func TestMarkCyberSessionBlockedWithMeta_RespectsDisabledSwitch(t *testing.T) {
 	ctx := context.Background()
 	svc, _ := newCyberBlockAdminService("false")
-	svc.MarkCyberSessionBlockedWithMeta(ctx, "k1", CyberBlockMeta{Kind: StickyIdentityKindSession})
+	svc.MarkCyberSessionBlockedWithMeta(ctx, "", []string{"k1"}, CyberBlockMeta{Kind: StickyIdentityKindSession})
 
 	items, err := svc.ListActiveBlocks(ctx)
 	require.NoError(t, err)
