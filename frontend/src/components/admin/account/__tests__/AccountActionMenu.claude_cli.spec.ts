@@ -42,7 +42,7 @@ function makeAccount(overrides: Partial<Account>): Account {
   }
 }
 
-const position = { top: 100, left: 100 }
+const anchorRect = new DOMRect(100, 100, 24, 24)
 const MENU_KEY = 'admin.accounts.claudeCli.menuLabel'
 const getBodyText = () => document.body.textContent ?? ''
 
@@ -55,7 +55,7 @@ const getBodyText = () => document.body.textContent ?? ''
 describe('AccountActionMenu — Claude CLI export visibility', () => {
   it('offers the export for an Anthropic OAuth account', () => {
     const wrapper = mount(AccountActionMenu, {
-      props: { show: true, account: makeAccount({}), position },
+      props: { show: true, account: makeAccount({}), anchorRect },
       attachTo: document.body,
     })
     expect(getBodyText()).toContain(MENU_KEY)
@@ -64,7 +64,7 @@ describe('AccountActionMenu — Claude CLI export visibility', () => {
 
   it('offers the export for an Anthropic setup-token account', () => {
     const wrapper = mount(AccountActionMenu, {
-      props: { show: true, account: makeAccount({ type: 'setup-token' }), position },
+      props: { show: true, account: makeAccount({ type: 'setup-token' }), anchorRect },
       attachTo: document.body,
     })
     expect(getBodyText()).toContain(MENU_KEY)
@@ -79,7 +79,7 @@ describe('AccountActionMenu — Claude CLI export visibility', () => {
     ['shadow account', { parent_account_id: 7 }],
   ])('hides the export for a %s', (_label, overrides) => {
     const wrapper = mount(AccountActionMenu, {
-      props: { show: true, account: makeAccount(overrides as Partial<Account>), position },
+      props: { show: true, account: makeAccount(overrides as Partial<Account>), anchorRect },
       attachTo: document.body,
     })
     expect(getBodyText()).not.toContain(MENU_KEY)
@@ -89,7 +89,7 @@ describe('AccountActionMenu — Claude CLI export visibility', () => {
   it('emits export-claude-cli with the account when clicked', async () => {
     const account = makeAccount({})
     const wrapper = mount(AccountActionMenu, {
-      props: { show: true, account, position },
+      props: { show: true, account, anchorRect },
       attachTo: document.body,
     })
 
