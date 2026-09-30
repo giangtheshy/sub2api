@@ -100,16 +100,25 @@ func (h *GatewayHandler) recordAnthropicRefusalIfMarked(
 	}
 
 	requestPath := ""
-	if c.Request != nil && c.Request.URL != nil {
-		requestPath = c.Request.URL.Path
+	requestCtx := context.Background()
+	if c.Request != nil {
+		requestCtx = c.Request.Context()
+		if c.Request.URL != nil {
+			requestPath = c.Request.URL.Path
+		}
 	}
 	recordInput := buildAnthropicRefusalRecordInput(
 		mark, apiKey, c.Writer.Header().Get("X-Request-Id"), GetInboundEndpoint(c), model, endUserIdentity,
 	)
 	recordInput.Endpoint = defaultString(recordInput.Endpoint, requestPath)
+	// 风控白名单用户只留证据：不计封号、不发邮件、不写屏蔽表（与 OpenAI 链路一致）。
+	recordInput.LogOnly = h.openAIGatewayService.CyberPolicyLogOnly(requestCtx, apiKey)
 
 	cmSvc := h.contentModerationService
 	blockOwner := h.openAIGatewayService
+	if recordInput.LogOnly {
+		blockOwner = nil
+	}
 	signal := mark.Signal
 	blockMeta.Signal = signal
 
@@ -162,6 +171,10 @@ func (h *GatewayHandler) rejectIfCyberSessionBlockedNative(
 	meta := service.CyberSessionBlockMeta(apiKey, c, body)
 	if meta.Key == "" {
 		return empty, false
+	}
+	// 风控白名单用户跳过既有屏蔽（与 OpenAI HTTP/WS 准入一致）；meta 仍返回供收尾复用。
+	if h.openAIGatewayService.CyberPolicyLogOnly(ctx, apiKey) {
+		return meta, false
 	}
 	if !h.openAIGatewayService.IsCyberSessionBlocked(ctx, meta.Key) {
 		return meta, false

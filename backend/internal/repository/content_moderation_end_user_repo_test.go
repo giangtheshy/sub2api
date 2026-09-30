@@ -65,6 +65,26 @@ func TestCountFlaggedByEndUserSince_ExcludesCyberPolicyWhenRequested(t *testing.
 	require.NoError(t, mock.ExpectationsWereMet())
 }
 
+// 风控白名单期间落下的 log-only 行只是证据：移出白名单后也不得回溯计入终端用户封禁，
+// 与账号层 CountFlaggedByUserSince 的排除口径一致。
+func TestCountFlaggedByEndUserSince_ExcludesLogOnlyModes(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	defer func() { _ = db.Close() }()
+
+	repo := NewContentModerationRepository(db)
+	since := time.Now().Add(-time.Hour)
+	mock.ExpectQuery(regexp.QuoteMeta("AND mode <> 'cyber_log_only'\n  AND mode <> 'risk_control_log_only'")).
+		WithArgs("identity-a", since, false).
+		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
+
+	count, err := repo.CountFlaggedByEndUserSince(context.Background(), "identity-a", since, false)
+
+	require.NoError(t, err)
+	require.Zero(t, count)
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
 // 重置锚点必须是 end_user_banned 而不是 auto_banned：两层解封互不影响。
 func TestCountFlaggedByEndUserSince_ResetsOnEndUserBanAnchor(t *testing.T) {
 	db, mock, err := sqlmock.New()
