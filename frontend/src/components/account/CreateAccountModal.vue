@@ -1550,6 +1550,7 @@
             <div v-if="modelRestrictionMode === 'whitelist'">
               <ModelWhitelistSelector
                 v-model="allowedModels"
+                :model-mappings="modelMappings"
                 :platform="form.platform"
                 :sync-credentials="syncPreviewCredentials"
                 @upstream-synced="upstreamModelsPreviewed = true"
@@ -2053,6 +2054,7 @@
           <div v-if="modelRestrictionMode === 'whitelist'">
             <ModelWhitelistSelector
               v-model="allowedModels"
+              :model-mappings="modelMappings"
               platform="anthropic"
               :sync-credentials="syncPreviewCredentials"
               @upstream-synced="upstreamModelsPreviewed = true"
@@ -2410,6 +2412,7 @@
           <div v-if="modelRestrictionMode === 'whitelist'">
             <ModelWhitelistSelector
               v-model="allowedModels"
+              :model-mappings="modelMappings"
               :platform="form.platform"
               :sync-credentials="syncPreviewCredentials"
               @upstream-synced="upstreamModelsPreviewed = true"
