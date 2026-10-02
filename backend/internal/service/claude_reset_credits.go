@@ -105,8 +105,13 @@ func (s *ClaudeResetCreditService) account(ctx context.Context, id int64) (*Acco
 	if a == nil || a.Platform != PlatformAnthropic || a.Type != AccountTypeOAuth {
 		return nil, "", "", infraerrors.BadRequest("CLAUDE_RESET_OAUTH_REQUIRED", "Claude OAuth account required")
 	}
-	profile := false
-	for _, scope := range strings.Fields(a.GetCredential("scope")) {
+	// Only reject a scope that is known to lack user:profile (e.g. an inference-
+	// only setup token). An unrecorded scope is unknown, not missing: current
+	// Claude Code no longer writes "scopes" into claudeAiOauth, so imported
+	// accounts have none, and the upstream enforces the real grant anyway.
+	scopes := strings.Fields(a.GetCredential("scope"))
+	profile := len(scopes) == 0
+	for _, scope := range scopes {
 		if scope == "user:profile" {
 			profile = true
 		}

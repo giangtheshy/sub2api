@@ -55,6 +55,16 @@ describe('Claude reset credit status', () => {
     expect(expiry.attributes('title')).toContain('Launch reset')
   })
 
+  it('shows the server reason when the status query fails', async () => {
+    getCredits.mockRejectedValue({ status: 503, reason: 'CLAUDE_RESET_TOKEN_UNAVAILABLE', message: 'OAuth token unavailable' })
+    const wrapper = mount(ClaudeResetCreditsCell, { props: { account } })
+    await countButton(wrapper).trigger('click')
+    await flushPromises()
+    const alert = wrapper.get('[data-testid="claude-reset-error"]')
+    expect(alert.text()).toContain('admin.accounts.claudeResetCredits.error')
+    expect(alert.text()).toContain('OAuth token unavailable')
+  })
+
   it('counts held resets and prefers the next redeemable grant', async () => {
     const later = { ...credit, label: 'Later', expires_at: '2026-12-01T00:00:00Z', redeemable: false }
     const next = { ...credit, label: 'Next', expires_at: '2026-11-01T00:00:00Z', redeemable: true }

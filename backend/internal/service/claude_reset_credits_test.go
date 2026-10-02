@@ -91,9 +91,23 @@ func TestClaudeResetEligibilityFailClosed(t *testing.T) {
 	}
 }
 func TestClaudeResetStatusRejectsMissingScopeBeforeNetwork(t *testing.T) {
-	s := &ClaudeResetCreditService{accounts: resetAccountStub{&Account{Platform: PlatformAnthropic, Type: AccountTypeOAuth}}, do: func(*http.Request, string) (*http.Response, error) { t.Fatal("network called"); return nil, nil }}
+	s := &ClaudeResetCreditService{accounts: resetAccountStub{&Account{Platform: PlatformAnthropic, Type: AccountTypeOAuth, Credentials: map[string]any{"scope": "user:inference"}}}, do: func(*http.Request, string) (*http.Response, error) { t.Fatal("network called"); return nil, nil }}
 	_, e := s.Query(context.Background(), 1)
 	require.Error(t, e)
+}
+
+// Current Claude Code no longer writes "scopes" into claudeAiOauth, so imported
+// accounts carry no recorded scope. An unknown scope must not be treated as a
+// missing one: the upstream enforces the real grant.
+func TestClaudeResetStatusAllowsUnknownScope(t *testing.T) {
+	called := false
+	s := &ClaudeResetCreditService{accounts: resetAccountStub{&Account{Platform: PlatformAnthropic, Type: AccountTypeOAuth, Credentials: map[string]any{}}}, tokens: resetTokenStub{}, now: time.Now, do: func(*http.Request, string) (*http.Response, error) {
+		called = true
+		return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(`{}`))}, nil
+	}}
+	_, e := s.Query(context.Background(), 1)
+	require.NoError(t, e)
+	require.True(t, called)
 }
 func TestClaudeResetMalformedAndAbsent(t *testing.T) {
 	for _, body := range []string{`{}`, `{"five_hour":{},"cedar_ember":null}`, `{"cedar_ember":{"eligible":true}}`, `{"error":{"message":"private upstream data"}}`, `not json`} {

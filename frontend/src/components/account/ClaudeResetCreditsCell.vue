@@ -88,8 +88,14 @@
       </span>
     </div>
 
-    <div v-if="visible && error" role="alert" class="text-[10px] text-red-600 dark:text-red-400">
-      {{ t('admin.accounts.claudeResetCredits.error') }}
+    <div
+      v-if="visible && error"
+      role="alert"
+      data-testid="claude-reset-error"
+      class="text-[10px] text-red-600 dark:text-red-400"
+      :title="errorDetail"
+    >
+      {{ t('admin.accounts.claudeResetCredits.error') }}<span v-if="errorDetail">: {{ errorDetail }}</span>
     </div>
     <div
       v-if="visible && redeemFeedback"
@@ -135,6 +141,9 @@ const { t } = useI18n()
 const status = ref<ClaudeResetCredits | null>(null)
 const loading = ref(false)
 const error = ref(false)
+// Server-provided reason for a failed status query, so the operator sees why
+// (e.g. token unavailable, upstream HTTP 401) instead of a generic message.
+const errorDetail = ref('')
 const redeeming = ref(false)
 const showRedeemConfirm = ref(false)
 const redeemFeedback = ref<{ kind: 'success' | 'warning' | 'error'; text: string } | null>(null)
@@ -150,6 +159,7 @@ watch(() => [props.account.id, props.account.platform, props.account.type], () =
   status.value = null
   loading.value = false
   error.value = false
+  errorDetail.value = ''
   redeeming.value = false
   showRedeemConfirm.value = false
   redeemFeedback.value = null
@@ -320,11 +330,16 @@ async function refresh() {
   const current = ++generation
   loading.value = true
   error.value = false
+  errorDetail.value = ''
   try {
     const result = await getClaudeResetCredits(props.account.id)
     if (current === generation) status.value = result
-  } catch {
-    if (current === generation) { error.value = true; status.value = null }
+  } catch (e) {
+    if (current === generation) {
+      error.value = true
+      errorDetail.value = (e as { message?: string })?.message ?? ''
+      status.value = null
+    }
   } finally {
     if (current === generation) loading.value = false
   }
