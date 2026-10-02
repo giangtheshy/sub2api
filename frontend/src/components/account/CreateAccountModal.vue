@@ -7205,25 +7205,34 @@ const handleImportOAuthCredentials = async (content: string) => {
   oauth.error.value = ''
 
   try {
-    const tokenInfos = await adminAPI.accounts.importOAuthCredentials({
+    const { accounts: tokenInfos, failed } = await adminAPI.accounts.importOAuthCredentialsDetailed({
       credentials: content.trim(),
       ...(form.proxy_id ? { proxy_id: form.proxy_id } : {})
     })
 
+    // Credentials whose refresh token Anthropic rejected (already used by the
+    // Claude Code install they came from, or revoked) are reported by position
+    // while the rest of the batch is still created.
+    const rejected = failed.map((item) =>
+      t('admin.accounts.oauth.keyAuthFailed', { index: item.index, error: item.error })
+    )
+
     if (!tokenInfos.length) {
-      oauth.error.value = t('admin.accounts.oauth.importCredentialsEmpty')
+      oauth.error.value = rejected.length
+        ? rejected.join('\n')
+        : t('admin.accounts.oauth.importCredentialsEmpty')
       return
     }
 
     // The mixed-channel risk depends on platform + groups, which are identical
     // for every account in the batch, so one confirmation covers them all.
     const canContinue = await ensureAntigravityMixedChannelConfirmed(async () => {
-      await createImportedOAuthAccounts(tokenInfos)
+      await createImportedOAuthAccounts(tokenInfos, rejected)
     })
     if (!canContinue) {
       return
     }
-    await createImportedOAuthAccounts(tokenInfos)
+    await createImportedOAuthAccounts(tokenInfos, rejected)
   } catch (error: unknown) {
     oauth.error.value = resolveAuthErrorMessage(error, t, 'admin.accounts.oauth.authFailed')
   } finally {
@@ -7236,10 +7245,13 @@ const handleImportOAuthCredentials = async (content: string) => {
  * failures instead of letting the first one abort the rest — a batch of twenty
  * where number three is stale should still yield nineteen accounts.
  */
-const createImportedOAuthAccounts = async (tokenInfos: Record<string, unknown>[]) => {
+const createImportedOAuthAccounts = async (
+  tokenInfos: Record<string, unknown>[],
+  rejected: string[] = []
+) => {
   const usedNames = new Set<string>()
   let successCount = 0
-  const errors: string[] = []
+  const errors: string[] = [...rejected]
 
   for (let i = 0; i < tokenInfos.length; i++) {
     const tokenInfo = tokenInfos[i]

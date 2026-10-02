@@ -202,30 +202,52 @@ type ImportOAuthCredentialsInput struct {
 	ProxyID *int64
 }
 
+// ImportOAuthCredentialFailure names a pasted credential that could not be
+// imported. Index is 1-based in paste order (after duplicate collapsing).
+type ImportOAuthCredentialFailure struct {
+	Index int    `json:"index"`
+	Error string `json:"error"`
+}
+
+// ImportOAuthCredentialsResult holds the accounts ready to be created and the
+// credentials that were rejected, so one dead credential never sinks a batch.
+type ImportOAuthCredentialsResult struct {
+	Accounts []*TokenInfo                   `json:"accounts"`
+	Failed   []ImportOAuthCredentialFailure `json:"failed"`
+}
+
 // ImportOAuthCredentials imports an already-issued OAuth credential bundle into
 // a TokenInfo usable by the account-creation flow.
 //
-// This does not contact any authorization endpoint and mints nothing: it accepts
-// a credential the operator already holds (from a genuine Claude Code login) and
-// normalizes it into the same shape ExchangeCode returns, so the rest of the
-// OAuth account pipeline is reused unchanged. Account identity (org/email) is
-// enriched best-effort via the bootstrap endpoint and never blocks the import.
+// It mints nothing and runs no authorization step: it accepts a credential the
+// operator already holds (from a genuine Claude Code login), rotates its refresh
+// token once and returns the same shape ExchangeCode does, so the rest of the
+// OAuth account pipeline is reused unchanged. See ImportOAuthCredentialsBatch
+// for why the rotation is required.
 //
-// When the blob holds several credentials only the first is returned; callers
-// that support batches use ImportOAuthCredentialsBatch.
+// When the blob holds several credentials only the first imported one is
+// returned; callers that support batches use ImportOAuthCredentialsBatch.
 func (s *OAuthService) ImportOAuthCredentials(ctx context.Context, input *ImportOAuthCredentialsInput) (*TokenInfo, error) {
-	tokenInfos, err := s.ImportOAuthCredentialsBatch(ctx, input)
+	result, err := s.ImportOAuthCredentialsBatch(ctx, input)
 	if err != nil {
 		return nil, err
 	}
-	return tokenInfos[0], nil
+	return result.Accounts[0], nil
 }
 
 // ImportOAuthCredentialsBatch imports every credential found in the blob and
 // returns one TokenInfo per account, in the order pasted. Duplicates sharing a
-// refresh token are collapsed by the parser. It never returns an empty slice
-// without an error, so callers can index the result after checking err.
-func (s *OAuthService) ImportOAuthCredentialsBatch(ctx context.Context, input *ImportOAuthCredentialsInput) ([]*TokenInfo, error) {
+// refresh token are collapsed by the parser.
+//
+// Each credential's refresh token is rotated immediately. Anthropic refresh
+// tokens are single-use: the exported token is still held by the Claude Code
+// install it came from, and whichever side refreshes first leaves the other
+// with invalid_grant — which surfaced as imported accounts dying at their first
+// refresh, ~8h after import. Rotating here makes sub2api the sole owner of a
+// fresh token, and a token that is already dead is rejected now instead of
+// hours later. Credentials that fail are reported in Failed; the call errors
+// only when nothing could be imported, so Accounts is never empty on success.
+func (s *OAuthService) ImportOAuthCredentialsBatch(ctx context.Context, input *ImportOAuthCredentialsInput) (*ImportOAuthCredentialsResult, error) {
 	parsedCredentials, err := oauth.ParseClaudeOAuthCredentialsMany(input.Raw)
 	if err != nil {
 		return nil, fmt.Errorf("invalid OAuth credentials: %w", err)
@@ -242,26 +264,25 @@ func (s *OAuthService) ImportOAuthCredentialsBatch(ctx context.Context, input *I
 		}
 	}
 
-	now := time.Now().Unix()
-	tokenInfos := make([]*TokenInfo, 0, len(parsedCredentials))
-	for _, parsed := range parsedCredentials {
-		// ExpiresIn is derived from the file's expiry relative to now. A past or
-		// unknown expiry yields a non-positive value; the refresh path handles that
-		// by refreshing on first use.
-		tokenInfo := &TokenInfo{
-			AccessToken:  parsed.AccessToken,
-			TokenType:    "Bearer",
-			ExpiresIn:    parsed.ExpiresAt - now,
-			ExpiresAt:    parsed.ExpiresAt,
-			RefreshToken: parsed.RefreshToken,
-			Scope:        parsed.Scope,
+	result := &ImportOAuthCredentialsResult{
+		Accounts: make([]*TokenInfo, 0, len(parsedCredentials)),
+		Failed:   []ImportOAuthCredentialFailure{},
+	}
+	for i, parsed := range parsedCredentials {
+		tokenInfo, errRefresh := s.claimImportedCredential(ctx, parsed, proxyURL)
+		if errRefresh != nil {
+			log.Printf("[OAuth] Import credential #%d rejected: %v", i+1, errRefresh)
+			result.Failed = append(result.Failed, ImportOAuthCredentialFailure{
+				Index: i + 1,
+				Error: errRefresh.Error(),
+			})
+			continue
 		}
 
-		// Best-effort identity enrichment. A failure here (expired access token,
-		// network error, endpoint change) must not fail the import — the refresh
-		// token can still mint a fresh access token later, and identity fields are
-		// optional on the account. One credential failing must not sink the others.
-		if info, errBoot := s.oauthClient.BootstrapAccount(ctx, parsed.AccessToken, proxyURL); errBoot == nil && info != nil {
+		// Best-effort identity enrichment. A failure here (network error, endpoint
+		// change) must not fail the import — identity fields are optional on the
+		// account. One credential failing must not sink the others.
+		if info, errBoot := s.oauthClient.BootstrapAccount(ctx, tokenInfo.AccessToken, proxyURL); errBoot == nil && info != nil {
 			tokenInfo.OrgUUID = info.OrganizationUUID
 			tokenInfo.AccountUUID = info.AccountUUID
 			tokenInfo.EmailAddress = info.EmailAddress
@@ -269,10 +290,42 @@ func (s *OAuthService) ImportOAuthCredentialsBatch(ctx context.Context, input *I
 			log.Printf("[OAuth] Import bootstrap enrichment skipped: %v", errBoot)
 		}
 
-		tokenInfos = append(tokenInfos, tokenInfo)
+		result.Accounts = append(result.Accounts, tokenInfo)
 	}
 
-	return tokenInfos, nil
+	if len(result.Accounts) == 0 {
+		if len(result.Failed) == 1 {
+			return nil, fmt.Errorf("import OAuth credentials: %s", result.Failed[0].Error)
+		}
+		return nil, fmt.Errorf("import OAuth credentials: all %d credentials were rejected; first: %s",
+			len(result.Failed), result.Failed[0].Error)
+	}
+	return result, nil
+}
+
+// claimImportedCredential rotates an imported refresh token and returns the
+// fresh token set. The rotated refresh token is the only one that stays valid,
+// so it — not the pasted one — must be what the account stores.
+func (s *OAuthService) claimImportedCredential(ctx context.Context, parsed *oauth.ParsedOAuthCredentials, proxyURL string) (*TokenInfo, error) {
+	tokenInfo, err := s.RefreshToken(ctx, parsed.RefreshToken, proxyURL)
+	if err != nil {
+		return nil, fmt.Errorf("refresh token rejected by Anthropic (already used or revoked; export a fresh credential): %w", err)
+	}
+	if tokenInfo.AccessToken == "" {
+		return nil, fmt.Errorf("refresh response carried no access token")
+	}
+	// The token endpoint may omit fields it did not change; fall back to the
+	// imported values so the account never loses its refresh token or scope.
+	if tokenInfo.RefreshToken == "" {
+		tokenInfo.RefreshToken = parsed.RefreshToken
+	}
+	if tokenInfo.Scope == "" {
+		tokenInfo.Scope = parsed.Scope
+	}
+	if tokenInfo.TokenType == "" {
+		tokenInfo.TokenType = "Bearer"
+	}
+	return tokenInfo, nil
 }
 
 // CookieAuthInput represents the input for cookie-based authentication

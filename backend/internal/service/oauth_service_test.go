@@ -5,6 +5,7 @@ package service
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -628,20 +629,44 @@ func TestOAuthService_Stop_NoPanic(t *testing.T) {
 	svc.Stop()
 }
 
+// rotatingRefresh returns a refresh mock that rotates every refresh token it is
+// handed, the way Anthropic's token endpoint does: "sk-ant-ort01-X" becomes
+// access "sk-ant-oat01-X-NEW" and refresh "sk-ant-ort01-X-NEW".
+func rotatingRefresh(calls *[]string) func(context.Context, string, string) (*oauth.TokenResponse, error) {
+	return func(_ context.Context, refreshToken, _ string) (*oauth.TokenResponse, error) {
+		if calls != nil {
+			*calls = append(*calls, refreshToken)
+		}
+		suffix := strings.TrimPrefix(refreshToken, "sk-ant-ort01-")
+		return &oauth.TokenResponse{
+			AccessToken:  "sk-ant-oat01-" + suffix + "-NEW",
+			TokenType:    "Bearer",
+			ExpiresIn:    28800,
+			RefreshToken: "sk-ant-ort01-" + suffix + "-NEW",
+			Scope:        "user:inference user:profile",
+		}, nil
+	}
+}
+
+const importDeadRefreshErr = `token refresh failed: status 400, body: {"error": "invalid_grant"}`
+
 func TestOAuthService_ImportOAuthCredentials(t *testing.T) {
 	t.Parallel()
 
 	// Synthetic tokens — never a real credential.
 	const raw = `{"claudeAiOauth":{"accessToken":"sk-ant-oat01-IMPORT","refreshToken":"sk-ant-ort01-IMPORT","expiresAt":1787183506000,"subscriptionType":"max_20x"}}`
 
-	t.Run("imports tokens and normalizes fields", func(t *testing.T) {
-		bootCalled := false
+	// The imported refresh token is shared with the Claude Code install it was
+	// exported from. Whichever side refreshes first rotates it and the other is
+	// left holding a dead token (invalid_grant). Rotating once at import makes
+	// sub2api the sole owner of the chain from the start.
+	t.Run("rotates the imported refresh token so sub2api owns the chain", func(t *testing.T) {
+		var refreshCalls []string
+		var bootTokens []string
 		client := &mockClaudeOAuthClient{
+			refreshTokenFunc: rotatingRefresh(&refreshCalls),
 			bootstrapFunc: func(_ context.Context, accessToken, _ string) (*ClaudeBootstrapInfo, error) {
-				bootCalled = true
-				if accessToken != "sk-ant-oat01-IMPORT" {
-					t.Errorf("bootstrap got access token %q", accessToken)
-				}
+				bootTokens = append(bootTokens, accessToken)
 				return &ClaudeBootstrapInfo{
 					AccountUUID:      "acc-123",
 					OrganizationUUID: "org-456",
@@ -652,31 +677,64 @@ func TestOAuthService_ImportOAuthCredentials(t *testing.T) {
 		svc := NewOAuthService(&mockProxyRepoForOAuth{}, client)
 		defer svc.Stop()
 
+		before := time.Now().Unix()
 		info, err := svc.ImportOAuthCredentials(context.Background(), &ImportOAuthCredentialsInput{Raw: raw})
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
-		if info.AccessToken != "sk-ant-oat01-IMPORT" || info.RefreshToken != "sk-ant-ort01-IMPORT" {
-			t.Fatalf("tokens = %q / %q", info.AccessToken, info.RefreshToken)
+		if len(refreshCalls) != 1 || refreshCalls[0] != "sk-ant-ort01-IMPORT" {
+			t.Fatalf("expected one refresh with the imported token, got %v", refreshCalls)
 		}
-		if info.ExpiresAt != 1787183506 {
-			t.Errorf("ExpiresAt = %d, want 1787183506", info.ExpiresAt)
+		if info.AccessToken != "sk-ant-oat01-IMPORT-NEW" || info.RefreshToken != "sk-ant-ort01-IMPORT-NEW" {
+			t.Fatalf("account must store the rotated tokens, got %q / %q", info.AccessToken, info.RefreshToken)
+		}
+		if info.ExpiresIn != 28800 || info.ExpiresAt < before+28800 {
+			t.Errorf("expiry must come from the refresh response: in=%d at=%d", info.ExpiresIn, info.ExpiresAt)
 		}
 		if info.TokenType != "Bearer" {
 			t.Errorf("TokenType = %q, want Bearer", info.TokenType)
 		}
-		if !bootCalled {
-			t.Error("expected bootstrap enrichment to be attempted")
+		if info.Scope != "user:inference user:profile" {
+			t.Errorf("Scope = %q, want the granted scope", info.Scope)
+		}
+		if len(bootTokens) != 1 || bootTokens[0] != "sk-ant-oat01-IMPORT-NEW" {
+			t.Errorf("bootstrap must use the fresh access token, got %v", bootTokens)
 		}
 		if info.OrgUUID != "org-456" || info.AccountUUID != "acc-123" || info.EmailAddress != "user@example.com" {
 			t.Errorf("identity not enriched: %+v", info)
 		}
 	})
 
+	t.Run("keeps the imported refresh token and scope when the response omits them", func(t *testing.T) {
+		const withScopes = `{"claudeAiOauth":{"accessToken":"sk-ant-oat01-IMPORT","refreshToken":"sk-ant-ort01-IMPORT","expiresAt":1787183506000,"scopes":["user:inference","user:profile"]}}`
+		client := &mockClaudeOAuthClient{
+			refreshTokenFunc: func(_ context.Context, _, _ string) (*oauth.TokenResponse, error) {
+				return &oauth.TokenResponse{AccessToken: "sk-ant-oat01-FRESH", ExpiresIn: 28800}, nil
+			},
+		}
+		svc := NewOAuthService(&mockProxyRepoForOAuth{}, client)
+		defer svc.Stop()
+
+		info, err := svc.ImportOAuthCredentials(context.Background(), &ImportOAuthCredentialsInput{Raw: withScopes})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if info.AccessToken != "sk-ant-oat01-FRESH" || info.RefreshToken != "sk-ant-ort01-IMPORT" {
+			t.Fatalf("tokens = %q / %q", info.AccessToken, info.RefreshToken)
+		}
+		if info.TokenType != "Bearer" {
+			t.Errorf("TokenType = %q, want Bearer fallback", info.TokenType)
+		}
+		if info.Scope != "user:inference user:profile" {
+			t.Errorf("Scope = %q, want the imported scopes", info.Scope)
+		}
+	})
+
 	t.Run("bootstrap failure does not fail import", func(t *testing.T) {
 		client := &mockClaudeOAuthClient{
+			refreshTokenFunc: rotatingRefresh(nil),
 			bootstrapFunc: func(_ context.Context, _, _ string) (*ClaudeBootstrapInfo, error) {
-				return nil, fmt.Errorf("access token expired")
+				return nil, fmt.Errorf("bootstrap unavailable")
 			},
 		}
 		svc := NewOAuthService(&mockProxyRepoForOAuth{}, client)
@@ -686,11 +744,32 @@ func TestOAuthService_ImportOAuthCredentials(t *testing.T) {
 		if err != nil {
 			t.Fatalf("import must not fail on bootstrap error: %v", err)
 		}
-		if info.RefreshToken != "sk-ant-ort01-IMPORT" {
+		if info.RefreshToken != "sk-ant-ort01-IMPORT-NEW" {
 			t.Fatalf("refresh token lost: %q", info.RefreshToken)
 		}
 		if info.OrgUUID != "" || info.AccountUUID != "" {
 			t.Errorf("identity should be empty on bootstrap failure: %+v", info)
+		}
+	})
+
+	// A credential whose refresh token is already dead would otherwise become an
+	// account that works until its access token expires and then fails with
+	// invalid_grant hours later. Reject it at import, where the operator can act.
+	t.Run("rejects a credential whose refresh token is already dead", func(t *testing.T) {
+		client := &mockClaudeOAuthClient{
+			refreshTokenFunc: func(_ context.Context, _, _ string) (*oauth.TokenResponse, error) {
+				return nil, fmt.Errorf(importDeadRefreshErr)
+			},
+		}
+		svc := NewOAuthService(&mockProxyRepoForOAuth{}, client)
+		defer svc.Stop()
+
+		_, err := svc.ImportOAuthCredentials(context.Background(), &ImportOAuthCredentialsInput{Raw: raw})
+		if err == nil {
+			t.Fatal("expected a dead refresh token to be rejected")
+		}
+		if !strings.Contains(err.Error(), "invalid_grant") {
+			t.Errorf("error should carry the upstream reason, got %v", err)
 		}
 	})
 
@@ -713,10 +792,11 @@ func TestOAuthService_ImportOAuthCredentialsBatch(t *testing.T) {
 
 	t.Run("returns one token info per pasted credential, enriched individually", func(t *testing.T) {
 		emailsByToken := map[string]string{
-			"sk-ant-oat01-ONE": "one@example.com",
-			"sk-ant-oat01-TWO": "two@example.com",
+			"sk-ant-oat01-ONE-NEW": "one@example.com",
+			"sk-ant-oat01-TWO-NEW": "two@example.com",
 		}
 		client := &mockClaudeOAuthClient{
+			refreshTokenFunc: rotatingRefresh(nil),
 			bootstrapFunc: func(_ context.Context, accessToken, _ string) (*ClaudeBootstrapInfo, error) {
 				return &ClaudeBootstrapInfo{EmailAddress: emailsByToken[accessToken]}, nil
 			},
@@ -724,16 +804,17 @@ func TestOAuthService_ImportOAuthCredentialsBatch(t *testing.T) {
 		svc := NewOAuthService(&mockProxyRepoForOAuth{}, client)
 		defer svc.Stop()
 
-		infos, err := svc.ImportOAuthCredentialsBatch(context.Background(), &ImportOAuthCredentialsInput{
+		result, err := svc.ImportOAuthCredentialsBatch(context.Background(), &ImportOAuthCredentialsInput{
 			Raw: first + "\n" + second,
 		})
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
-		if len(infos) != 2 {
-			t.Fatalf("got %d token infos, want 2", len(infos))
+		infos := result.Accounts
+		if len(infos) != 2 || len(result.Failed) != 0 {
+			t.Fatalf("got %d token infos / %d failures, want 2 / 0", len(infos), len(result.Failed))
 		}
-		if infos[0].RefreshToken != "sk-ant-ort01-ONE" || infos[1].RefreshToken != "sk-ant-ort01-TWO" {
+		if infos[0].RefreshToken != "sk-ant-ort01-ONE-NEW" || infos[1].RefreshToken != "sk-ant-ort01-TWO-NEW" {
 			t.Fatalf("order or content wrong: %q / %q", infos[0].RefreshToken, infos[1].RefreshToken)
 		}
 		if infos[0].EmailAddress != "one@example.com" || infos[1].EmailAddress != "two@example.com" {
@@ -742,47 +823,78 @@ func TestOAuthService_ImportOAuthCredentialsBatch(t *testing.T) {
 		}
 	})
 
-	// One expired access token in the batch must not cost the other accounts
-	// their import: the refresh token still works for all of them.
-	t.Run("one bootstrap failure does not sink the batch", func(t *testing.T) {
+	// One dead refresh token in the batch must not cost the other accounts their
+	// import; it is reported by position so the operator knows which one to redo.
+	t.Run("a dead credential is reported without sinking the batch", func(t *testing.T) {
 		client := &mockClaudeOAuthClient{
-			bootstrapFunc: func(_ context.Context, accessToken, _ string) (*ClaudeBootstrapInfo, error) {
-				if accessToken == "sk-ant-oat01-ONE" {
-					return nil, fmt.Errorf("access token expired")
+			refreshTokenFunc: func(ctx context.Context, refreshToken, proxyURL string) (*oauth.TokenResponse, error) {
+				if refreshToken == "sk-ant-ort01-ONE" {
+					return nil, fmt.Errorf(importDeadRefreshErr)
 				}
-				return &ClaudeBootstrapInfo{EmailAddress: "two@example.com"}, nil
+				return rotatingRefresh(nil)(ctx, refreshToken, proxyURL)
 			},
 		}
 		svc := NewOAuthService(&mockProxyRepoForOAuth{}, client)
 		defer svc.Stop()
 
-		infos, err := svc.ImportOAuthCredentialsBatch(context.Background(), &ImportOAuthCredentialsInput{
+		result, err := svc.ImportOAuthCredentialsBatch(context.Background(), &ImportOAuthCredentialsInput{
 			Raw: "[" + first + "," + second + "]",
 		})
 		if err != nil {
-			t.Fatalf("batch must not fail on a bootstrap error: %v", err)
+			t.Fatalf("batch must not fail when only one credential is dead: %v", err)
 		}
-		if len(infos) != 2 {
-			t.Fatalf("got %d token infos, want 2", len(infos))
+		if len(result.Accounts) != 1 || result.Accounts[0].RefreshToken != "sk-ant-ort01-TWO-NEW" {
+			t.Fatalf("unexpected accounts: %+v", result.Accounts)
 		}
-		if infos[0].EmailAddress != "" {
-			t.Errorf("failed enrichment should leave identity empty, got %q", infos[0].EmailAddress)
+		if len(result.Failed) != 1 || result.Failed[0].Index != 1 {
+			t.Fatalf("expected credential #1 reported as failed, got %+v", result.Failed)
 		}
-		if infos[1].EmailAddress != "two@example.com" {
-			t.Errorf("second credential lost its identity: %q", infos[1].EmailAddress)
+		if !strings.Contains(result.Failed[0].Error, "invalid_grant") {
+			t.Errorf("failure should carry the upstream reason, got %q", result.Failed[0].Error)
 		}
 	})
 
-	t.Run("single credential still yields a one-item batch", func(t *testing.T) {
-		svc := NewOAuthService(&mockProxyRepoForOAuth{}, &mockClaudeOAuthClient{})
+	t.Run("fails the call when every credential is dead", func(t *testing.T) {
+		client := &mockClaudeOAuthClient{
+			refreshTokenFunc: func(_ context.Context, _, _ string) (*oauth.TokenResponse, error) {
+				return nil, fmt.Errorf(importDeadRefreshErr)
+			},
+		}
+		svc := NewOAuthService(&mockProxyRepoForOAuth{}, client)
 		defer svc.Stop()
 
-		infos, err := svc.ImportOAuthCredentialsBatch(context.Background(), &ImportOAuthCredentialsInput{Raw: first})
-		if err != nil {
+		if _, err := svc.ImportOAuthCredentialsBatch(context.Background(), &ImportOAuthCredentialsInput{
+			Raw: first + "\n" + second,
+		}); err == nil {
+			t.Fatal("expected an error when no credential could be imported")
+		}
+	})
+
+	t.Run("refreshes through the selected proxy", func(t *testing.T) {
+		var proxies []string
+		client := &mockClaudeOAuthClient{
+			refreshTokenFunc: func(ctx context.Context, refreshToken, proxyURL string) (*oauth.TokenResponse, error) {
+				proxies = append(proxies, proxyURL)
+				return rotatingRefresh(nil)(ctx, refreshToken, proxyURL)
+			},
+		}
+		proxyRepo := &mockProxyRepoForOAuth{
+			getByIDFunc: func(_ context.Context, id int64) (*Proxy, error) {
+				return &Proxy{ID: id, Protocol: "http", Host: "proxy.local", Port: 8080}, nil
+			},
+		}
+		svc := NewOAuthService(proxyRepo, client)
+		defer svc.Stop()
+
+		proxyID := int64(9)
+		if _, err := svc.ImportOAuthCredentialsBatch(context.Background(), &ImportOAuthCredentialsInput{
+			Raw:     first,
+			ProxyID: &proxyID,
+		}); err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
-		if len(infos) != 1 || infos[0].RefreshToken != "sk-ant-ort01-ONE" {
-			t.Fatalf("unexpected batch: %+v", infos)
+		if len(proxies) != 1 || !strings.Contains(proxies[0], "proxy.local:8080") {
+			t.Fatalf("refresh must use the account proxy, got %v", proxies)
 		}
 	})
 

@@ -1181,7 +1181,7 @@ export default {
         cookieFileReadFailed: 'Could not read that file. Paste its contents instead.',
         importCredentials: 'Import OAuth credentials',
         importCredentialsDesc:
-          'Paste or upload Claude Code credential files (the JSON containing "claudeAiOauth" with accessToken and refreshToken). They are imported as-is and create normal OAuth accounts — nothing is minted and no authorization step runs.',
+          'Paste or upload Claude Code credential files (the JSON containing "claudeAiOauth" with accessToken and refreshToken). Each refresh token is rotated once on import so sub2api becomes its sole owner: the Claude Code install it came from will be signed out and must run /login again (that creates a separate session and does not affect this account). Tokens already used or revoked are rejected.',
         importCredentialsInputLabel: 'claudeAiOauth JSON',
         importCredentialsUpload: 'Choose files',
         importCredentialsPlaceholder:

@@ -573,23 +573,37 @@ export async function validateClaudeCookie(payload: {
  * Import one or more already-issued Claude OAuth credential files (claudeAiOauth
  * JSON) so a batch of accounts can be created from a single paste.
  *
- * The backend contacts no authorization endpoint and mints nothing: it accepts
- * credentials the operator already holds and returns the same TokenInfo shape as
- * the interactive OAuth exchange, so the caller creates normal OAuth accounts.
+ * The backend runs no authorization step: it rotates each pasted refresh token
+ * once so sub2api becomes the sole owner of the token chain (the exported token
+ * is single-use and still held by the Claude Code install it came from), then
+ * returns the same TokenInfo shape as the interactive OAuth exchange.
  *
  * @param payload - The raw credential JSON (single object, JSON array, one per
  *   line, or concatenated objects) and an optional proxy
- * @returns One TokenInfo per credential, in the order pasted
+ * @returns One TokenInfo per importable credential, in the order pasted, plus
+ *   the 1-based positions of credentials whose refresh token was rejected
  */
+export async function importOAuthCredentialsDetailed(payload: {
+  credentials: string
+  proxy_id?: number
+}): Promise<{
+  accounts: Record<string, unknown>[]
+  failed: { index: number; error: string }[]
+}> {
+  const { data } = await apiClient.post<{
+    accounts: Record<string, unknown>[]
+    failed?: { index: number; error: string }[]
+    total: number
+  }>('/admin/accounts/import-oauth-credentials', payload)
+  return { accounts: data?.accounts ?? [], failed: data?.failed ?? [] }
+}
+
+/** Like importOAuthCredentialsDetailed, returning only the importable accounts. */
 export async function importOAuthCredentials(payload: {
   credentials: string
   proxy_id?: number
 }): Promise<Record<string, unknown>[]> {
-  const { data } = await apiClient.post<{
-    accounts: Record<string, unknown>[]
-    total: number
-  }>('/admin/accounts/import-oauth-credentials', payload)
-  return data?.accounts ?? []
+  return (await importOAuthCredentialsDetailed(payload)).accounts
 }
 
 /**
@@ -1274,6 +1288,7 @@ export const accountsAPI = {
   exchangeCode,
   validateClaudeCookie,
   importOAuthCredentials,
+  importOAuthCredentialsDetailed,
   refreshOpenAIToken,
   batchCreate,
   batchUpdateCredentials,

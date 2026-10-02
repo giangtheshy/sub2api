@@ -5,10 +5,12 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 const {
   createAccountMock,
   importOAuthCredentialsMock,
+  importRejectedMock,
   validateClaudeCookieMock,
 } = vi.hoisted(() => ({
   createAccountMock: vi.fn(),
   importOAuthCredentialsMock: vi.fn(),
+  importRejectedMock: vi.fn(),
   validateClaudeCookieMock: vi.fn(),
 }))
 
@@ -33,6 +35,10 @@ vi.mock('@/api/admin', () => ({
       importCodexSession: vi.fn(),
       createOpenAICodexPAT: vi.fn(),
       importOAuthCredentials: importOAuthCredentialsMock,
+      importOAuthCredentialsDetailed: async (payload: unknown) => ({
+        accounts: await importOAuthCredentialsMock(payload),
+        failed: importRejectedMock() ?? [],
+      }),
       validateClaudeCookie: validateClaudeCookieMock,
     },
     settings: {
@@ -129,6 +135,7 @@ async function openAnthropicAuthStepWithControls() {
 describe('CreateAccountModal credential import applies account controls', () => {
   beforeEach(() => {
     createAccountMock.mockReset().mockResolvedValue({ id: 7, platform: 'anthropic', type: 'oauth' })
+    importRejectedMock.mockReset().mockReturnValue([])
     importOAuthCredentialsMock.mockReset().mockResolvedValue([
       {
         access_token: 'sk-ant-oat01-test',
@@ -258,6 +265,35 @@ describe('CreateAccountModal credential import applies account controls', () => 
     expect(createAccountMock).toHaveBeenCalledTimes(3)
     // The failure is surfaced, so the modal stays open with the batch report.
     expect(wrapper.html()).toContain('admin.accounts.oauth.keyAuthFailed')
+  })
+
+  it('creates the importable accounts and reports the rejected credentials', async () => {
+    importOAuthCredentialsMock.mockResolvedValue([
+      { access_token: 'a2', refresh_token: 'r2', email_address: 'two@example.com' },
+    ])
+    importRejectedMock.mockReturnValue([{ index: 1, error: 'invalid_grant' }])
+
+    const wrapper = await openAnthropicAuthStepWithControls()
+    await wrapper.get('[data-testid="import-oauth-credentials"]').trigger('click')
+    await flushPromises()
+
+    expect(createAccountMock).toHaveBeenCalledTimes(1)
+    expect(createAccountMock.mock.calls[0]?.[0]?.credentials?.refresh_token).toBe('r2')
+    // The modal stays open so the operator sees which credential to re-export.
+    expect(wrapper.html()).toContain('admin.accounts.oauth.keyAuthFailed')
+  })
+
+  it('reports rejected credentials when none could be imported', async () => {
+    importOAuthCredentialsMock.mockResolvedValue([])
+    importRejectedMock.mockReturnValue([{ index: 1, error: 'invalid_grant' }])
+
+    const wrapper = await openAnthropicAuthStepWithControls()
+    await wrapper.get('[data-testid="import-oauth-credentials"]').trigger('click')
+    await flushPromises()
+
+    expect(createAccountMock).not.toHaveBeenCalled()
+    expect(wrapper.html()).toContain('admin.accounts.oauth.keyAuthFailed')
+    expect(wrapper.html()).not.toContain('admin.accounts.oauth.importCredentialsEmpty')
   })
 
   it('reports an empty import instead of creating anything', async () => {

@@ -2581,18 +2581,19 @@ func (h *OAuthHandler) ImportOAuthCredentials(c *gin.Context) {
 		return
 	}
 
-	tokenInfos, err := h.oauthService.ImportOAuthCredentialsBatch(c.Request.Context(), &service.ImportOAuthCredentialsInput{
+	result, err := h.oauthService.ImportOAuthCredentialsBatch(c.Request.Context(), &service.ImportOAuthCredentialsInput{
 		Raw:     req.Credentials,
 		ProxyID: req.ProxyID,
 	})
 	if err != nil {
-		response.ErrorFrom(c, err)
+		response.BadRequest(c, err.Error())
 		return
 	}
 
 	response.Success(c, map[string]any{
-		"accounts": tokenInfos,
-		"total":    len(tokenInfos),
+		"accounts": result.Accounts,
+		"failed":   result.Failed,
+		"total":    len(result.Accounts),
 	})
 }
 

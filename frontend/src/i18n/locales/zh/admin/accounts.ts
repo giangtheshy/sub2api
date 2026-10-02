@@ -1281,7 +1281,7 @@ export default {
         cookieFileReadFailed: '无法读取该文件，请改为直接粘贴内容。',
         importCredentials: '导入 OAuth 凭证',
         importCredentialsDesc:
-          '粘贴或上传 Claude Code 的凭证文件（包含 "claudeAiOauth"，内有 accessToken 与 refreshToken 的 JSON）。将按原样导入并创建普通 OAuth 账号——不铸造任何令牌，也不执行授权步骤。',
+          '粘贴或上传 Claude Code 的凭证文件（包含 "claudeAiOauth"，内有 accessToken 与 refreshToken 的 JSON）。导入时会立即轮换一次 refreshToken，使 sub2api 成为其唯一持有者：导出该凭证的 Claude Code 会被登出，需要重新执行 /login（新会话独立，不影响本账号）。已被使用或吊销的令牌会被拒绝。',
         importCredentialsInputLabel: 'claudeAiOauth JSON',
         importCredentialsUpload: '选择文件',
         importCredentialsPlaceholder:
