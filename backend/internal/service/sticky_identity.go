@@ -23,24 +23,12 @@ const (
 	// 永远可用，保证"不带标识"的请求也有稳定 key，堵住返回空串即放行的漏洞；
 	// 代价是屏蔽范围等于整把 Key——没有信息可用来分辨是谁。
 	StickyIdentityKindAPIKeyUser = "apikey_user"
-	// StickyIdentityKindTranscript：没有任何请求级标识，屏蔽只落在 transcript
-	// 前缀 key 上（管理端展示用；见 IsPerEndUserStickyKind）。
-	StickyIdentityKindTranscript = "transcript"
+	//
+	// [FORK-BAN-SCOPE] 业务约定：转售商/接入系统必须上报 X-User-Id。既不带 X-User-Id
+	// 也不带会话的请求视为"整把 Key 就是一个主体"，cyber 屏蔽按本层 key 封整把 Key
+	// 是**预期行为**。kind 参与哈希，所以本层 key 只会命中同样不带标识的请求，
+	// 带 X-User-Id / 会话的请求派生的是其它层 key，不受牵连。
 )
-
-// IsPerEndUserStickyKind 报告该层级的 key 是否能区分"同一把 Key 下的不同终端用户"。
-//
-// [FORK-BAN-SCOPE] cyber 会话屏蔽绝不能写/读 apikey_user 层的 key：转售商把所有
-// 终端用户经同一把 Key 转发，该层 key = hash(apiKey,user) 会一次封掉整把 Key。
-// 没有 X-User-Id / 会话时，只允许 transcript key 生效。
-func IsPerEndUserStickyKind(kind string) bool {
-	switch kind {
-	case StickyIdentityKindXUserIDSession, StickyIdentityKindXUserID, StickyIdentityKindSession:
-		return true
-	default:
-		return false
-	}
-}
 
 // CyberBlockEndUserID 返回客户端声明的终端用户标识（X-User-Id，已 trim），拿不到为空串。
 //

@@ -186,12 +186,12 @@ func TestBuildCyberSessionBlockWritePlanCombinesExplicitAndTranscriptKeys(t *tes
 	c.Request.Header.Set("User-Agent", "client/1.2.3")
 
 	apiKey := &service.APIKey{ID: 7}
-	// [FORK-BAN-SCOPE] 行为变更：无 X-User-Id/会话时不再写 apikey_user 层 sticky key
-	// （那等于封整把 Key），只剩两把 transcript key。
+	// [FORK-BAN-SCOPE] 无 X-User-Id/会话：写 apikey_user 层 key（封整把 Key 的无标识流量，
+	// 预期行为）+ 两把 transcript key。
 	plan := buildCyberSessionBlockWritePlan(apiKey, c, body)
-	require.Len(t, plan.keys, 2)
-	require.Empty(t, plan.meta.Key)
-	require.Equal(t, service.StickyIdentityKindTranscript, plan.meta.Kind)
+	require.Len(t, plan.keys, 3)
+	require.Equal(t, plan.meta.Key, plan.keys[0])
+	require.Equal(t, service.StickyIdentityKindAPIKeyUser, plan.meta.Kind)
 	require.NotEmpty(t, plan.scopeKey)
 	headerlessScope := plan.scopeKey
 

@@ -133,8 +133,8 @@ func (h *GatewayHandler) recordAnthropicRefusalIfMarked(
 		// Anthropic 原生 body 不是 OpenAI transcript 形状，上游的 transcript 前缀
 		// key 在这里派生不出有意义的结果，因此只写本路径自己的 sticky key，
 		// 保持与合并前完全一致的屏蔽范围。
-		// [FORK-BAN-SCOPE] blockMeta.Key 为空（无 X-User-Id/会话）时绝不写：
-		// 退化成 (apiKey,user) 会封掉转售商整把 Key。
+		// [FORK-BAN-SCOPE] key 层级：X-User-Id+会话 > X-User-Id > 会话 > apikey_user。
+		// 无标识时落 apikey_user 封整把 Key 的无标识流量（预期：接入方必须上报 X-User-Id）。
 		if blockOwner != nil && blockMeta.Key != "" {
 			blockOwner.MarkCyberSessionBlockedWithMeta(ctx, "", []string{blockMeta.Key}, blockMeta)
 		}
@@ -172,7 +172,7 @@ func (h *GatewayHandler) rejectIfCyberSessionBlockedNative(
 	}
 	// [FORK-BAN-SCOPE] key 由 X-User-Id + Claude Code 会话（X-Claude-Code-Session-Id >
 	// metadata.user_id）组合派生，必须与 recordAnthropicRefusalIfMarked 写入的是同一把；
-	// 无 X-User-Id/会话时 Key 为空——不查 apikey_user 整把 Key 的 key。
+	// 无 X-User-Id/会话时查 apikey_user 层（整把 Key 的无标识流量）。
 	meta := service.CyberSessionBlockMeta(apiKey, c, body)
 	if meta.Key == "" {
 		return empty, false

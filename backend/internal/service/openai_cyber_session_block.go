@@ -72,13 +72,10 @@ type CyberBlockMeta struct {
 //
 // 开关默认关闭，行为变化只在启用会话屏蔽时生效。
 //
-// [FORK-BAN-SCOPE] apikey_user 层（无 X-User-Id、无会话）返回空串：该层 key 等于
-// 整把 Key，转售商的所有终端用户共用，绝不能写入或查询。
+// [FORK-BAN-SCOPE] 无 X-User-Id、无会话时返回 apikey_user 层 key（封整把 Key 的
+// 无标识流量）——这是预期行为，接入方必须上报 X-User-Id；带标识的请求走更窄的层。
 func CyberSessionBlockKey(apiKeyID, userID int64, c *gin.Context, body []byte) string {
-	kind, _, key := StickyIdentity(apiKeyID, userID, c, body)
-	if !IsPerEndUserStickyKind(kind) {
-		return ""
-	}
+	_, _, key := StickyIdentity(apiKeyID, userID, c, body)
 	return key
 }
 
@@ -104,13 +101,7 @@ func CyberSessionBlockMeta(apiKey *APIKey, c *gin.Context, body []byte) CyberBlo
 		}
 	}
 	info := StickyIdentityDetailed(apiKeyID, userID, c, body)
-	// [FORK-BAN-SCOPE] apikey_user 层不产出 Key（=整把 Key 连坐）；此时只剩
-	// transcript key 可写，Kind 标成 transcript 让管理端看清屏蔽范围。
-	if !IsPerEndUserStickyKind(info.Kind) {
-		info.Key = ""
-		info.Masked = ""
-		info.Kind = StickyIdentityKindTranscript
-	}
+	// [FORK-BAN-SCOPE] 无标识时 info.Kind=apikey_user，Key 封整把 Key 的无标识流量（预期行为）。
 	return CyberBlockMeta{
 		Key:             info.Key,
 		Kind:            info.Kind,
@@ -239,7 +230,6 @@ func (s *OpenAIGatewayService) MarkCyberSessionBlockedWithMeta(ctx context.Conte
 	if s == nil {
 		return
 	}
-	keys = dropAPIKeyWideCyberBlockKey(keys, &meta)
 	keys = dedupeCyberSessionKeys(keys)
 	if len(keys) == 0 {
 		return
@@ -273,30 +263,6 @@ func (s *OpenAIGatewayService) MarkCyberSessionBlockedWithMeta(ctx context.Conte
 	if err := store.SetCyberSessionBlockedMeta(ctx, scopeKey, keys, meta, ttl); err != nil {
 		logger.LegacyPrintf("service.openai_gateway", "cyber session block meta write failed: err=%v", err)
 	}
-}
-
-// dropAPIKeyWideCyberBlockKey 是写入侧的最后一道闸。
-//
-// [FORK-BAN-SCOPE] 调用方若递进来 apikey_user 层的 key（例如合并上游后又直接用
-// StickyIdentity 的 key），这里把它剔除：该 key 覆盖整把 Key 的所有终端用户。
-func dropAPIKeyWideCyberBlockKey(keys []string, meta *CyberBlockMeta) []string {
-	if meta == nil || meta.Kind != StickyIdentityKindAPIKeyUser {
-		return keys
-	}
-	wide := meta.Key
-	meta.Kind = StickyIdentityKindTranscript
-	meta.Key = ""
-	meta.Masked = ""
-	if wide == "" {
-		return keys
-	}
-	out := make([]string, 0, len(keys))
-	for _, k := range keys {
-		if k != wide {
-			out = append(out, k)
-		}
-	}
-	return out
 }
 
 // dedupeCyberSessionKeys 去空去重并保持顺序，keys[0] 因此稳定地是调用方给出的
@@ -354,7 +320,8 @@ func (s *OpenAIGatewayService) FindCyberSessionBlockedForRequest(ctx context.Con
 	if store == nil {
 		return ""
 	}
-	// [FORK-BAN-SCOPE] CyberSessionBlockKey 对 apikey_user 层返回空串，不查整把 Key 的 key。
+	// [FORK-BAN-SCOPE] 无标识请求查 apikey_user 层 key（整把 Key 的无标识流量）；
+	// 带 X-User-Id/会话的请求查的是各自更窄的 key，不会命中 apikey_user 屏蔽。
 	// 廉价的精确查找先行：本地 sticky key（(apiKey,user) 叠加 X-User-Id 与显式
 	// 会话 ID）与上游的显式会话 key。前者是写入侧的规范 key，必须在这里查，
 	// 否则 Anthropic 原生链路写下的屏蔽项在 OpenAI/Codex 链路上查不到。

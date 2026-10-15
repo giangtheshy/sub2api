@@ -47,10 +47,15 @@ func TestCyberSessionBlockKey(t *testing.T) {
 	c4, b4 := newCyberBlockTestCtx(nil, `{"prompt_cache_key":"pck-1"}`)
 	require.NotEmpty(t, CyberSessionBlockKey(101, 0, c4, b4))
 
-	// [FORK-BAN-SCOPE] 行为变更：无 X-User-Id、无会话 → 不产出 (apiKey,user) 层 key。
-	// 该 key 覆盖转售商整把 Key 的全部终端用户；此类请求只靠 transcript key 屏蔽。
+	// [FORK-BAN-SCOPE] 无 X-User-Id、无会话 → (apiKey,user) 层 key，封整把 Key 的无标识流量
+	// （接入方必须上报 X-User-Id）；kind 参与哈希，与带标识请求的 key 互不相同。
 	c5, b5 := newCyberBlockTestCtx(nil, `{"input":"hello world"}`)
-	require.Empty(t, CyberSessionBlockKey(101, 7, c5, b5), "apikey_user tier must never be a cyber block key")
+	k5 := CyberSessionBlockKey(101, 7, c5, b5)
+	require.NotEmpty(t, k5, "header-less requests fall back to the apikey_user tier")
+	c5b, b5b := newCyberBlockTestCtx(nil, `{"input":"different content"}`)
+	require.Equal(t, k5, CyberSessionBlockKey(101, 7, c5b, b5b), "content must not change the apikey_user key")
+	c5u, b5u := newCyberBlockTestCtx(map[string]string{"X-User-Id": "u1"}, `{"input":"hello world"}`)
+	require.NotEqual(t, k5, CyberSessionBlockKey(101, 7, c5u, b5u))
 
 	// X-User-Id 与 session 组合派生：多一个信号 → 另一把更细的 key。
 	c7, b7 := newCyberBlockTestCtx(map[string]string{"X-User-Id": "u9", "session_id": "sess-abc"}, `{}`)

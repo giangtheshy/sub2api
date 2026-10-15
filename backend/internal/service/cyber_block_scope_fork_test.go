@@ -150,7 +150,7 @@ func TestForkBanScope_OtherEndUserOnSameKeyIsNeverBlocked(t *testing.T) {
 	}
 }
 
-// 无 X-User-Id 且 transcript 超限时：scope 覆盖转售商全部终端用户，必须 fail-open。
+// 无 X-User-Id 且 transcript 超限时：scope 未按终端用户隔离，超限哨兵必须 fail-open。
 func TestForkBanScope_OverflowWithoutEndUserFailsOpen(t *testing.T) {
 	svc, combo := newForkScopeCyberService()
 	const shortChat = `{"messages":[{"role":"user","content":"setup"},{"role":"assistant","content":"ready"},{"role":"user","content":"trigger"}]}`
@@ -158,8 +158,9 @@ func TestForkBanScope_OverflowWithoutEndUserFailsOpen(t *testing.T) {
 	forkScopeMarkLikeHandler(t, svc, cFlag, bFlag)
 	require.True(t, combo.store.scopes[CyberSessionScopeKey(forkScopeAPIKeyID, forkScopeClientIP, forkScopeUA, "")])
 
+	// 只带会话（无 X-User-Id）的长对话：不受 apikey_user 屏蔽影响，也不得拿到超限哨兵。
 	long := forkScopeLongBody(t, "other")
-	cLong, _ := newCyberBlockTestCtx(nil, string(long))
+	cLong, _ := newCyberBlockTestCtx(map[string]string{"session_id": "sess-other"}, string(long))
 	require.Empty(t, forkScopeFind(svc, cLong, long), "unrelated long conversation must not get the overflow sentinel")
 
 	// fail-open 仍会查保留的最近前缀：直接把最新前缀写入后可命中。
@@ -168,38 +169,29 @@ func TestForkBanScope_OverflowWithoutEndUserFailsOpen(t *testing.T) {
 	require.Equal(t, retained[len(retained)-1], forkScopeFind(svc, cLong, long))
 }
 
-// B2：不带任何标识的违规请求不得通过 (apiKey,user) key 封住其他不带标识的请求。
-func TestForkBanScope_HeaderlessFlagDoesNotBlockOtherHeaderlessRequests(t *testing.T) {
+// [FORK-BAN-SCOPE] 无 X-User-Id、无会话的违规请求按 apikey_user 封整把 Key 的无标识流量
+// （业务约定：接入方必须上报 X-User-Id）；但带 X-User-Id 的请求不受牵连。
+func TestForkBanScope_HeaderlessFlagBlocksWholeKeyHeaderlessTraffic(t *testing.T) {
 	svc, combo := newForkScopeCyberService()
 	cFlag, bFlag := newCyberBlockTestCtx(nil, `{"input":"bad prompt"}`)
 	keys := forkScopeMarkLikeHandler(t, svc, cFlag, bFlag)
-	require.NotEmpty(t, keys, "transcript key still blocks the flagged conversation")
+	require.NotEmpty(t, keys)
 
 	_, _, wideKey := StickyIdentity(forkScopeAPIKeyID, forkScopeUserID, cFlag, bFlag)
-	require.False(t, combo.store.blocked[wideKey], "apikey_user key must never be written")
-	for _, m := range combo.store.meta {
-		require.Equal(t, StickyIdentityKindTranscript, m.Kind)
-	}
+	require.True(t, combo.store.blocked[wideKey], "apikey_user key must be written for header-less traffic")
+	require.Equal(t, StickyIdentityKindAPIKeyUser, combo.store.meta[keys[0]].Kind)
 
+	// 同 Key 其它无标识请求（不同内容）：被封。
 	cOther, bOther := newCyberBlockTestCtx(nil, `{"input":"innocent question"}`)
-	require.Empty(t, forkScopeFind(svc, cOther, bOther))
+	require.Equal(t, wideKey, forkScopeFind(svc, cOther, bOther))
 
-	// 被标记的同一段内容仍被挡（transcript key）。
-	cSame, bSame := newCyberBlockTestCtx(nil, `{"input":"bad prompt"}`)
-	require.NotEmpty(t, forkScopeFind(svc, cSame, bSame))
-}
+	// 同 Key 带 X-User-Id 的请求：不受影响。
+	cUser, bUser := newCyberBlockTestCtx(map[string]string{"X-User-Id": "end-user-a"}, `{"input":"innocent question"}`)
+	require.Empty(t, forkScopeFind(svc, cUser, bUser))
 
-// 写入侧最后一道闸：即使调用方递进 apikey_user 层 key，也不会落库。
-func TestForkBanScope_MarkDropsAPIKeyWideKey(t *testing.T) {
-	svc, combo := newForkScopeCyberService()
-	c, b := newCyberBlockTestCtx(nil, `{}`)
-	info := StickyIdentityDetailed(forkScopeAPIKeyID, forkScopeUserID, c, b)
-	require.Equal(t, StickyIdentityKindAPIKeyUser, info.Kind)
-	svc.MarkCyberSessionBlockedWithMeta(context.Background(), "", []string{info.Key, "transcript-key"},
-		CyberBlockMeta{Key: info.Key, Kind: info.Kind})
-	require.False(t, combo.store.blocked[info.Key])
-	require.True(t, combo.store.blocked["transcript-key"])
-	require.Equal(t, StickyIdentityKindTranscript, combo.store.meta["transcript-key"].Kind)
+	// 同 Key 只带会话的请求：同样不受影响。
+	cSess, bSess := newCyberBlockTestCtx(map[string]string{"session_id": "sess-1"}, `{"input":"innocent question"}`)
+	require.Empty(t, forkScopeFind(svc, cSess, bSess))
 }
 
 // B5：Claude Code 会话（X-Claude-Code-Session-Id > metadata.user_id）参与屏蔽标识。
