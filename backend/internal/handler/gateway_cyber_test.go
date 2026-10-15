@@ -21,6 +21,19 @@ func newNativeGatewayTestCtx(body string) *gin.Context {
 	return c
 }
 
+// newNativeGatewayTestCtxWithHeaders 同 newNativeGatewayTestCtx，额外设置请求头。
+func newNativeGatewayTestCtxWithHeaders(body string, headers map[string]string) *gin.Context {
+	c := newNativeGatewayTestCtx(body)
+	for k, v := range headers {
+		c.Request.Header.Set(k, v)
+	}
+	return c
+}
+
+// nativeCyberTestEndUser 让会话屏蔽 key 落在单个终端用户上：无 X-User-Id/会话的
+// 请求按设计不写也不查屏蔽 key（[FORK-BAN-SCOPE]，否则会封掉整把 Key）。
+var nativeCyberTestEndUser = map[string]string{"X-User-Id": "end-user-1"}
+
 // 无标记 → 不记录、不置守卫位。
 func TestRecordAnthropicRefusalIfMarked_NoMark(t *testing.T) {
 	c := newNativeGatewayTestCtx(`{}`)
@@ -160,16 +173,16 @@ func TestRejectIfCyberSessionBlockedNative_AllowlistedUserSkipsExistingBlock(t *
 	trusted := nativeCyberTestAPIKey(11, nativeCyberAllowlistedUserID)
 	regular := nativeCyberTestAPIKey(12, 1752)
 	for _, apiKey := range []*service.APIKey{trusted, regular} {
-		meta := service.CyberSessionBlockMeta(apiKey, newNativeGatewayTestCtx(string(body)), body)
+		meta := service.CyberSessionBlockMeta(apiKey, newNativeGatewayTestCtxWithHeaders(string(body), nativeCyberTestEndUser), body)
 		require.NotEmpty(t, meta.Key)
 		require.NoError(t, harness.blockStore.SetCyberSessionBlocked(context.Background(), "", []string{meta.Key}, time.Minute))
 	}
 
-	regularCtx := newNativeGatewayTestCtx(string(body))
+	regularCtx := newNativeGatewayTestCtxWithHeaders(string(body), nativeCyberTestEndUser)
 	_, rejected := harness.handler.rejectIfCyberSessionBlockedNative(regularCtx, regular, body, "claude-sonnet-4-6")
 	require.True(t, rejected, "non-allowlisted users must still be rejected by an existing block")
 
-	trustedCtx := newNativeGatewayTestCtx(string(body))
+	trustedCtx := newNativeGatewayTestCtxWithHeaders(string(body), nativeCyberTestEndUser)
 	_, rejected = harness.handler.rejectIfCyberSessionBlockedNative(trustedCtx, trusted, body, "claude-sonnet-4-6")
 	require.False(t, rejected, "allowlisted users must skip existing blocks")
 	require.False(t, trustedCtx.Writer.Written())
@@ -180,7 +193,7 @@ func TestRecordAnthropicRefusalIfMarked_AllowlistedUserIsLogOnly(t *testing.T) {
 	harness := newNativeCyberAllowlistHarness(t)
 	body := []byte(`{"model":"claude-sonnet-4-6","messages":[]}`)
 	apiKey := nativeCyberTestAPIKey(11, nativeCyberAllowlistedUserID)
-	c := newNativeGatewayTestCtx(string(body))
+	c := newNativeGatewayTestCtxWithHeaders(string(body), nativeCyberTestEndUser)
 	service.MarkAnthropicRefusal(c, service.AnthropicRefusalMark{
 		Signal:         service.AnthropicRefusalSignalRefusal,
 		UpstreamStatus: 200,

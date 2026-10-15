@@ -531,6 +531,8 @@ type ContentModerationRepository interface {
 	ListLogs(ctx context.Context, filter ContentModerationLogFilter) ([]ContentModerationLog, *pagination.PaginationResult, error)
 	// CountFlaggedByUserSince 统计窗口内计入封号的违规次数（排除 hash_block；
 	// excludeCyberPolicy 为 true 时额外排除 cyber_policy 行）。
+	// [FORK-BAN-SCOPE] 实现必须只统计 end_user_identity 为空/NULL 的行：带 X-User-Id 的违规
+	// 归终端用户层，不能被多个终端客户累加成账号级封号。
 	CountFlaggedByUserSince(ctx context.Context, userID int64, since time.Time, excludeCyberPolicy bool) (int, error)
 	// CountFlaggedByEndUserSince 统计窗口内某个终端用户（转售商账号下的单个客户）
 	// 计入封禁的违规次数。重置锚点是 end_user_banned，与账号层的 auto_banned 独立。
@@ -2092,6 +2094,8 @@ func (s *ContentModerationService) persistContentModerationLog(ctx context.Conte
 	}
 	autoBanJustApplied := false
 	if applySideEffects {
+		// [FORK-BAN-SCOPE] 账号层内部会在 EndUserIdentity 非空时直接跳过（只封终端用户）；
+		// 无 X-User-Id 的请求仍按原逻辑走账号级封号。merge upstream 时保持这一分流。
 		autoBanJustApplied = s.applyFlaggedAccountSideEffects(ctx, cfg, log)
 		// 终端用户层与账号层并列判定：账号层没到阈值不代表这个终端客户没到。
 		// 必须在 CreateLog 之前跑完，EndUserBanned 才能随本行落库当计数锚点。
@@ -2108,6 +2112,12 @@ func (s *ContentModerationService) persistContentModerationLog(ctx context.Conte
 
 func (s *ContentModerationService) applyFlaggedAccountSideEffects(ctx context.Context, cfg *ContentModerationConfig, log *ContentModerationLog) bool {
 	if s == nil || cfg == nil || log == nil || !log.Flagged || log.UserID == nil || *log.UserID <= 0 {
+		return false
+	}
+	// [FORK-BAN-SCOPE] 请求带 X-User-Id（EndUserIdentity 非空）时，违规只归属终端用户层，
+	// 绝不计入/触发账号级封号——转售商的所有终端客户共用同一个 sub2api 账号/Key，
+	// 否则一个客户违规就会连坐禁用整个账号。merge upstream 时必须保留此提前返回。
+	if strings.TrimSpace(log.EndUserIdentity) != "" {
 		return false
 	}
 	count := 1
@@ -3362,6 +3372,8 @@ func (s *ContentModerationService) RecordCyberPolicyEvent(ctx context.Context, i
 		log.Mode = ContentModerationModeCyberLogOnly
 	}
 	if !in.LogOnly && !cfg.CyberPolicyExcludeFromBanCount {
+		// [FORK-BAN-SCOPE] 带 X-User-Id 的 cyber 事件只封终端用户，账号层在内部跳过；
+		// 不要在这里绕过 applyFlaggedAccountSideEffects 直接改用户状态。
 		autoBanned = s.applyFlaggedAccountSideEffects(ctx, cfg, log)
 		// 同一个排除开关同时管住两层：cyber 不计入封号时，终端用户层也不判。
 		s.applyFlaggedEndUserSideEffects(ctx, cfg, log)

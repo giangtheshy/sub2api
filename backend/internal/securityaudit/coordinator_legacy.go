@@ -23,6 +23,8 @@ func (a *LegacyModerationAdapter) Check(ctx context.Context, req Request) (*Lega
 		APIKeyID: req.APIKeyID, APIKeyName: req.APIKeyName, GroupID: cloneInt64Ptr(req.GroupID),
 		GroupName: req.GroupName, Endpoint: req.Endpoint, Provider: req.Provider,
 		Model: req.Model, Protocol: req.Protocol, Body: req.Body,
+		// [FORK-BAN-SCOPE] 透传终端用户标识；丢失会让违规回落到账号级封号（连坐整个转售商）。
+		EndUserIdentity: req.EndUserIdentity,
 	})
 	if err != nil || decision == nil {
 		return nil, err

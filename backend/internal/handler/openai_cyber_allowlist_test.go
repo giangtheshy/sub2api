@@ -63,7 +63,7 @@ func TestCyberAllowlistedUserBypassesExistingBlocksAndContinuesWebSocket(t *test
 		logs := harness.moderationRepo.logSnapshot()
 		return len(logs) == 1 && logs[0].Mode == service.ContentModerationModeCyberLogOnly
 	}, 3*time.Second, 10*time.Millisecond)
-	matched, err := store.FindCyberSessionBlocked(ctx, service.CyberSessionTranscriptBlockKeys(harness.apiKey.ID, payload))
+	matched, err := store.FindCyberSessionBlocked(ctx, service.CyberSessionTranscriptBlockKeys(harness.apiKey.ID, "", payload))
 	require.NoError(t, err)
 	require.Empty(t, matched, "the cyber response must not write new transcript blocks")
 	require.NoError(t, harness.clientConn.Write(ctx, coderws.MessageText, payload))

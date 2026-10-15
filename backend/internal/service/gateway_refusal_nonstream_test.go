@@ -95,7 +95,7 @@ func TestHandleErrorResponse_MarksAnthropicPermissionError(t *testing.T) {
 	c, _ := gin.CreateTestContext(rec)
 	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
 
-	body := []byte(`{"type":"error","error":{"type":"permission_error","message":"Your organization has been blocked"}}`)
+	body := []byte(`{"type":"error","error":{"type":"permission_error","message":"This request violates our Usage Policy"}}`)
 	resp := &http.Response{
 		StatusCode: http.StatusForbidden,
 		Header:     http.Header{"Content-Type": []string{"application/json"}},
@@ -109,7 +109,28 @@ func TestHandleErrorResponse_MarksAnthropicPermissionError(t *testing.T) {
 	require.NotNil(t, mark, "403 permission_error must set a mark")
 	require.Equal(t, AnthropicRefusalSignalPermissionError, mark.Signal)
 	require.Equal(t, http.StatusForbidden, mark.UpstreamStatus)
-	require.Equal(t, "Your organization has been blocked", mark.Message)
+	require.Equal(t, "This request violates our Usage Policy", mark.Message)
+}
+
+// [FORK-BAN-SCOPE] 行为变更：组织/账号层的 403 permission_error 是账号故障（handle403
+// 会把账号置错），不是终端用户违规，不得打硬拒答标记。
+func TestHandleErrorResponse_DoesNotMarkOrgLevel403(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+
+	body := []byte(`{"type":"error","error":{"type":"permission_error","message":"Your organization has been blocked"}}`)
+	resp := &http.Response{
+		StatusCode: http.StatusForbidden,
+		Header:     http.Header{"Content-Type": []string{"application/json"}},
+		Body:       io.NopCloser(bytes.NewReader(body)),
+	}
+
+	_, _ = newRefusalErrorPathGatewayService().handleErrorResponse(
+		context.Background(), resp, c, &Account{ID: 9, Name: "acc9"}, "claude-sonnet-4-6")
+
+	require.Nil(t, GetAnthropicRefusalMark(c), "org-level 403 must not be recorded as an end-user violation")
 }
 
 func TestHandleErrorResponse_DoesNotMarkRateLimit403(t *testing.T) {

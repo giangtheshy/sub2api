@@ -113,6 +113,10 @@ func buildContentModerationInput(c *gin.Context, apiKey *service.APIKey, subject
 	if input.Endpoint == "" && c.Request != nil && c.Request.URL != nil {
 		input.Endpoint = c.Request.URL.Path
 	}
+	// [FORK-BAN-SCOPE] 必须与封禁检查侧（rejectIfEndUserBanned*）使用同一个 userID 来源
+	// apiKeyUserID(apiKey)=apiKey.User.ID，否则哈希不一致，封了也拦不住。带 X-User-Id 时
+	// 违规只封终端用户、绝不封整个账号；merge upstream 时保留此字段赋值。
+	_, input.EndUserIdentity = service.EndUserBanIdentity(apiKeyUserID(apiKey), c)
 	return input
 }
 

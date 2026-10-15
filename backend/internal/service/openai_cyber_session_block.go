@@ -71,8 +71,14 @@ type CyberBlockMeta struct {
 //     转售场景下这是硬要求：一个终端客户违规不能连坐整把 Key。
 //
 // 开关默认关闭，行为变化只在启用会话屏蔽时生效。
+//
+// [FORK-BAN-SCOPE] apikey_user 层（无 X-User-Id、无会话）返回空串：该层 key 等于
+// 整把 Key，转售商的所有终端用户共用，绝不能写入或查询。
 func CyberSessionBlockKey(apiKeyID, userID int64, c *gin.Context, body []byte) string {
-	_, _, key := StickyIdentity(apiKeyID, userID, c, body)
+	kind, _, key := StickyIdentity(apiKeyID, userID, c, body)
+	if !IsPerEndUserStickyKind(kind) {
+		return ""
+	}
 	return key
 }
 
@@ -98,6 +104,13 @@ func CyberSessionBlockMeta(apiKey *APIKey, c *gin.Context, body []byte) CyberBlo
 		}
 	}
 	info := StickyIdentityDetailed(apiKeyID, userID, c, body)
+	// [FORK-BAN-SCOPE] apikey_user 层不产出 Key（=整把 Key 连坐）；此时只剩
+	// transcript key 可写，Kind 标成 transcript 让管理端看清屏蔽范围。
+	if !IsPerEndUserStickyKind(info.Kind) {
+		info.Key = ""
+		info.Masked = ""
+		info.Kind = StickyIdentityKindTranscript
+	}
 	return CyberBlockMeta{
 		Key:             info.Key,
 		Kind:            info.Kind,
@@ -115,15 +128,29 @@ const cyberSessionTranscriptLookupOverflowBlockKey = "transcript_lookup_limit_ex
 
 // CyberSessionExplicitBlockKey returns an inexpensive exact key when the
 // client supplies a stable session signal.
+//
+// [FORK-BAN-SCOPE] 有 X-User-Id 时必须混入：转售商可能给所有终端用户用同一个
+// session_id/prompt_cache_key，不混入就会一人违规封掉整把 Key。无 X-User-Id 时
+// 保持上游原始派生（hash(apiKey, session)）。
 func CyberSessionExplicitBlockKey(apiKeyID int64, c *gin.Context, body []byte) string {
-	return hashCyberSessionBlockKey(apiKeyID, explicitOpenAISessionID(c, body))
+	sessionID := explicitOpenAISessionID(c, body)
+	if sessionID == "" {
+		return ""
+	}
+	if endUserID := CyberBlockEndUserID(c); endUserID != "" {
+		sessionID = "x_user_id=" + endUserID + "|session=" + sessionID
+	}
+	return hashCyberSessionBlockKey(apiKeyID, sessionID)
 }
 
 // CyberSessionTranscriptBlockKeys returns the exact full-request key followed
 // by an optional rewrite-tolerant context key. The latter is emitted only after
 // model-generated history has been observed.
-func CyberSessionTranscriptBlockKeys(apiKeyID int64, body []byte) []string {
-	derived := deriveOpenAICyberTranscriptBlockKeys(apiKeyID, body)
+//
+// [FORK-BAN-SCOPE] endUserID（X-User-Id，见 CyberBlockEndUserID）参与派生；写入侧与
+// CyberSessionTranscriptLookupKeys 读取侧必须传同一个值。
+func CyberSessionTranscriptBlockKeys(apiKeyID int64, endUserID string, body []byte) []string {
+	derived := deriveOpenAICyberTranscriptBlockKeys(apiKeyID, endUserID, body)
 	if len(derived.lookupKeys) == 0 {
 		return nil
 	}
@@ -134,19 +161,26 @@ func CyberSessionTranscriptBlockKeys(apiKeyID int64, body []byte) []string {
 	return keys
 }
 
-func CyberSessionTranscriptLookupKeys(apiKeyID int64, body []byte) []string {
-	return deriveOpenAICyberTranscriptBlockKeys(apiKeyID, body).lookupKeys
+func CyberSessionTranscriptLookupKeys(apiKeyID int64, endUserID string, body []byte) []string {
+	return deriveOpenAICyberTranscriptBlockKeys(apiKeyID, endUserID, body).lookupKeys
 }
 
 // CyberSessionScopeKey is a coarse, non-blocking fingerprint used only to
 // avoid transcript parsing and MGET for sources that never produced a hit.
-func CyberSessionScopeKey(apiKeyID int64, clientIP, userAgent string) string {
+//
+// [FORK-BAN-SCOPE] endUserID（X-User-Id）参与派生：转售商的所有终端用户共享同一
+// IP+UA，不混入的话一个用户命中就会激活所有人的 scope。会话刻意不混入——transcript
+// key 本就是为了抵抗"换 session id 重放同一段历史"。写读两侧必须传同一个值。
+func CyberSessionScopeKey(apiKeyID int64, clientIP, userAgent, endUserID string) string {
 	if apiKeyID <= 0 {
 		return ""
 	}
 	raw := "cyber-scope:v1|api_key=" + strconv.FormatInt(apiKeyID, 10) +
 		"|ip=" + strings.TrimSpace(clientIP) +
 		"|ua=" + NormalizeSessionUserAgent(userAgent)
+	if endUserID = strings.TrimSpace(endUserID); endUserID != "" {
+		raw += "|x_user_id=" + endUserID
+	}
 	sum := sha256.Sum256([]byte(raw))
 	return hex.EncodeToString(sum[:])
 }
@@ -205,6 +239,7 @@ func (s *OpenAIGatewayService) MarkCyberSessionBlockedWithMeta(ctx context.Conte
 	if s == nil {
 		return
 	}
+	keys = dropAPIKeyWideCyberBlockKey(keys, &meta)
 	keys = dedupeCyberSessionKeys(keys)
 	if len(keys) == 0 {
 		return
@@ -238,6 +273,30 @@ func (s *OpenAIGatewayService) MarkCyberSessionBlockedWithMeta(ctx context.Conte
 	if err := store.SetCyberSessionBlockedMeta(ctx, scopeKey, keys, meta, ttl); err != nil {
 		logger.LegacyPrintf("service.openai_gateway", "cyber session block meta write failed: err=%v", err)
 	}
+}
+
+// dropAPIKeyWideCyberBlockKey 是写入侧的最后一道闸。
+//
+// [FORK-BAN-SCOPE] 调用方若递进来 apikey_user 层的 key（例如合并上游后又直接用
+// StickyIdentity 的 key），这里把它剔除：该 key 覆盖整把 Key 的所有终端用户。
+func dropAPIKeyWideCyberBlockKey(keys []string, meta *CyberBlockMeta) []string {
+	if meta == nil || meta.Kind != StickyIdentityKindAPIKeyUser {
+		return keys
+	}
+	wide := meta.Key
+	meta.Kind = StickyIdentityKindTranscript
+	meta.Key = ""
+	meta.Masked = ""
+	if wide == "" {
+		return keys
+	}
+	out := make([]string, 0, len(keys))
+	for _, k := range keys {
+		if k != wide {
+			out = append(out, k)
+		}
+	}
+	return out
 }
 
 // dedupeCyberSessionKeys 去空去重并保持顺序，keys[0] 因此稳定地是调用方给出的
@@ -295,6 +354,7 @@ func (s *OpenAIGatewayService) FindCyberSessionBlockedForRequest(ctx context.Con
 	if store == nil {
 		return ""
 	}
+	// [FORK-BAN-SCOPE] CyberSessionBlockKey 对 apikey_user 层返回空串，不查整把 Key 的 key。
 	// 廉价的精确查找先行：本地 sticky key（(apiKey,user) 叠加 X-User-Id 与显式
 	// 会话 ID）与上游的显式会话 key。前者是写入侧的规范 key，必须在这里查，
 	// 否则 Anthropic 原生链路写下的屏蔽项在 OpenAI/Codex 链路上查不到。
@@ -312,7 +372,10 @@ func (s *OpenAIGatewayService) FindCyberSessionBlockedForRequest(ctx context.Con
 			return key
 		}
 	}
-	scopeKey := CyberSessionScopeKey(apiKeyID, clientIP, userAgent)
+	// [FORK-BAN-SCOPE] scope/transcript 与写入侧（handler buildCyberSessionBlockWritePlan）
+	// 用同一个 X-User-Id 派生，否则同 Key 不同终端用户互相命中。
+	endUserID := CyberBlockEndUserID(c)
+	scopeKey := CyberSessionScopeKey(apiKeyID, clientIP, userAgent, endUserID)
 	active, err := store.IsCyberSessionScopeActive(ctx, scopeKey)
 	if err != nil {
 		logger.LegacyPrintf("service.openai_gateway", "cyber session scope read failed: err=%v", err)
@@ -321,10 +384,13 @@ func (s *OpenAIGatewayService) FindCyberSessionBlockedForRequest(ctx context.Con
 	if !active {
 		return ""
 	}
-	transcript := deriveOpenAICyberTranscriptBlockKeys(apiKeyID, body)
-	if transcript.lookupKeysTruncated {
+	transcript := deriveOpenAICyberTranscriptBlockKeys(apiKeyID, endUserID, body)
+	if transcript.lookupKeysTruncated && endUserID != "" {
 		// Once the coarse scope is active, silently dropping old candidates would
 		// let a blocked client evade prefix matching by appending dummy items.
+		// [FORK-BAN-SCOPE] 只有 scope 带 X-User-Id（=单个终端用户）时才 fail-closed；
+		// 无 X-User-Id 的 scope 覆盖转售商全部终端用户，此时 fail-open，只查保留的
+		// 最近 256 个前缀 key——否则所有长对话都会被 403。
 		return cyberSessionTranscriptLookupOverflowBlockKey
 	}
 	keys := transcript.lookupKeys

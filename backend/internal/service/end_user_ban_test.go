@@ -273,3 +273,95 @@ func TestEndUserAndAccountBanLayersAreIndependent(t *testing.T) {
 	require.Equal(t, StatusActive, userRepo.user.Status,
 		"the reseller account must stay active while only one of its customers is banned")
 }
+
+// [FORK-BAN-SCOPE] 转售商场景：所有终端客户共用一个 sub2api 账号。带 X-User-Id 的违规
+// 无论累计多少次（跨多个终端客户）都不得禁用账号，只封达到阈值的终端用户；
+// 不带 X-User-Id 的违规仍按原逻辑封账号。
+func TestPersistContentModerationLog_BanScopeByEndUserIdentity(t *testing.T) {
+	const userID = int64(42)
+	tests := []struct {
+		name             string
+		identities       []string // 每个元素是一次违规请求的终端用户标识，空串表示无 X-User-Id
+		wantUserStatus   string
+		wantBannedEndIDs []string
+		wantUnbannedIDs  []string
+	}{
+		{
+			name:            "different end users exceed account threshold, account stays active",
+			identities:      []string{"eu-1", "eu-2", "eu-3", "eu-4", "eu-5", "eu-6"},
+			wantUserStatus:  StatusActive,
+			wantUnbannedIDs: []string{"eu-1", "eu-2", "eu-3", "eu-4", "eu-5", "eu-6"},
+		},
+		{
+			name:             "one end user hits its threshold, only that end user banned",
+			identities:       []string{"eu-1", "eu-2", "eu-1", "eu-3", "eu-1", "eu-4"},
+			wantUserStatus:   StatusActive,
+			wantBannedEndIDs: []string{"eu-1"},
+			wantUnbannedIDs:  []string{"eu-2", "eu-3", "eu-4"},
+		},
+		{
+			name:           "header-less request after many end-user violations does not inherit their count",
+			identities:     []string{"eu-1", "eu-2", "eu-3", "eu-4", "eu-5", ""},
+			wantUserStatus: StatusActive,
+		},
+		{
+			name:           "header-less violations still ban the account",
+			identities:     []string{"", "", ""},
+			wantUserStatus: StatusDisabled,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			repo := &contentModerationTestRepo{}
+			store := newEndUserBanTestStore()
+			userRepo := &contentModerationTestUserRepo{user: &User{ID: userID, Role: RoleUser, Status: StatusActive}}
+			svc := &ContentModerationService{repo: repo, endUserBanStore: store, userRepo: userRepo}
+			cfg := &ContentModerationConfig{
+				AutoBanEnabled:       true,
+				BanThreshold:         3,
+				EndUserBanEnabled:    true,
+				EndUserBanThreshold:  3,
+				ViolationWindowHours: 24,
+			}
+			base := time.Now().Add(-time.Hour)
+			for i, identity := range tt.identities {
+				uid := userID
+				log := &ContentModerationLog{
+					UserID:          &uid,
+					Flagged:         true,
+					Action:          ContentModerationActionKeywordBlock,
+					EndUserIdentity: identity,
+					CreatedAt:       base.Add(time.Duration(i) * time.Minute),
+				}
+				svc.persistContentModerationLog(context.Background(), cfg, log, "", false, true)
+				if identity != "" {
+					require.False(t, log.AutoBanned, "a log carrying X-User-Id must never be marked as account auto-ban")
+				}
+			}
+			require.Equal(t, tt.wantUserStatus, userRepo.user.Status)
+			for _, id := range tt.wantBannedEndIDs {
+				require.True(t, store.has(id), "end user %s should be banned", id)
+			}
+			for _, id := range tt.wantUnbannedIDs {
+				require.False(t, store.has(id), "end user %s should not be banned", id)
+			}
+		})
+	}
+}
+
+// [FORK-BAN-SCOPE] cyber_policy 事件走同一规则：带 X-User-Id 不封账号。
+func TestApplyFlaggedAccountSideEffects_SkipsWhenEndUserIdentityPresent(t *testing.T) {
+	userID := int64(9)
+	userRepo := &contentModerationTestUserRepo{user: &User{ID: userID, Role: RoleUser, Status: StatusActive}}
+	svc := &ContentModerationService{repo: &contentModerationTestRepo{}, userRepo: userRepo}
+	cfg := &ContentModerationConfig{AutoBanEnabled: true, BanThreshold: 1, ViolationWindowHours: 24}
+
+	withID := &ContentModerationLog{Flagged: true, UserID: &userID, EndUserIdentity: "identity-a"}
+	require.False(t, svc.applyFlaggedAccountSideEffects(context.Background(), cfg, withID))
+	require.False(t, withID.AutoBanned)
+	require.Equal(t, StatusActive, userRepo.user.Status)
+
+	withoutID := &ContentModerationLog{Flagged: true, UserID: &userID}
+	require.True(t, svc.applyFlaggedAccountSideEffects(context.Background(), cfg, withoutID))
+	require.Equal(t, StatusDisabled, userRepo.user.Status)
+}

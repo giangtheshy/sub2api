@@ -47,13 +47,10 @@ func TestCyberSessionBlockKey(t *testing.T) {
 	c4, b4 := newCyberBlockTestCtx(nil, `{"prompt_cache_key":"pck-1"}`)
 	require.NotEmpty(t, CyberSessionBlockKey(101, 0, c4, b4))
 
-	// No explicit signal → still a stable key from the (apiKey,user) tier.
+	// [FORK-BAN-SCOPE] 行为变更：无 X-User-Id、无会话 → 不产出 (apiKey,user) 层 key。
+	// 该 key 覆盖转售商整把 Key 的全部终端用户；此类请求只靠 transcript key 屏蔽。
 	c5, b5 := newCyberBlockTestCtx(nil, `{"input":"hello world"}`)
-	k5 := CyberSessionBlockKey(101, 7, c5, b5)
-	require.NotEmpty(t, k5, "no-session requests must no longer bypass the block table")
-	c5b, b5b := newCyberBlockTestCtx(nil, `{"input":"different content"}`)
-	require.Equal(t, k5, CyberSessionBlockKey(101, 7, c5b, b5b))
-	require.NotEqual(t, k1, k5)
+	require.Empty(t, CyberSessionBlockKey(101, 7, c5, b5), "apikey_user tier must never be a cyber block key")
 
 	// X-User-Id 与 session 组合派生：多一个信号 → 另一把更细的 key。
 	c7, b7 := newCyberBlockTestCtx(map[string]string{"X-User-Id": "u9", "session_id": "sess-abc"}, `{}`)
@@ -110,24 +107,24 @@ func TestCyberSessionExplicitBlockKey(t *testing.T) {
 func TestCyberTranscriptBlockKeysRequireModelGeneratedHistory(t *testing.T) {
 	first := []byte(`{"instructions":"shared","input":[{"role":"user","content":"fixed environment"},{"role":"user","content":"question one"}]}`)
 	second := []byte(`{"instructions":"shared","input":[{"role":"user","content":"fixed environment"},{"role":"user","content":"question two"}]}`)
-	firstKeys := CyberSessionTranscriptBlockKeys(77, first)
-	secondKeys := CyberSessionTranscriptBlockKeys(77, second)
+	firstKeys := CyberSessionTranscriptBlockKeys(77, "", first)
+	secondKeys := CyberSessionTranscriptBlockKeys(77, "", second)
 	require.Len(t, firstKeys, 1)
 	require.Len(t, secondKeys, 1)
 	require.NotEqual(t, firstKeys[0], secondKeys[0])
 
 	hit := []byte(`{"messages":[{"role":"user","content":"setup"},{"role":"assistant","content":"ready"},{"role":"user","content":"trigger"}]}`)
 	continuation := []byte(`{"messages":[{"role":"user","content":"setup"},{"role":"assistant","content":"ready"},{"role":"user","content":"different trigger"},{"role":"assistant","content":"blocked"},{"role":"user","content":"continue"}]}`)
-	hitKeys := CyberSessionTranscriptBlockKeys(77, hit)
+	hitKeys := CyberSessionTranscriptBlockKeys(77, "", hit)
 	require.Len(t, hitKeys, 2)
-	require.Contains(t, CyberSessionTranscriptLookupKeys(77, continuation), hitKeys[1])
+	require.Contains(t, CyberSessionTranscriptLookupKeys(77, "", continuation), hitKeys[1])
 }
 
 func TestCyberTranscriptBlockKeysWebSocketResponseCreate(t *testing.T) {
 	body := []byte(`{"type":"response.create","response":{"prompt_cache_key":"ws-session","input":[{"role":"user","content":"setup"},{"role":"assistant","content":"ready"},{"role":"user","content":"trigger"}]}}`)
 	c, _ := newCyberBlockTestCtx(nil, string(body))
 	require.NotEmpty(t, CyberSessionExplicitBlockKey(88, c, body))
-	require.Len(t, CyberSessionTranscriptBlockKeys(88, body), 2)
+	require.Len(t, CyberSessionTranscriptBlockKeys(88, "", body), 2)
 }
 
 func TestCyberTranscriptLookupKeysAreBoundedAndKeepNewestOrder(t *testing.T) {
@@ -138,15 +135,15 @@ func TestCyberTranscriptLookupKeysAreBoundedAndKeepNewestOrder(t *testing.T) {
 	body, err := json.Marshal(map[string]any{"messages": messages})
 	require.NoError(t, err)
 
-	keys := CyberSessionTranscriptLookupKeys(77, body)
+	keys := CyberSessionTranscriptLookupKeys(77, "", body)
 	require.Len(t, keys, maxOpenAICyberTranscriptLookupKeys)
 
 	firstRetainedBody, err := json.Marshal(map[string]any{"messages": messages[:45]})
 	require.NoError(t, err)
-	firstRetainedPrefix := CyberSessionTranscriptLookupKeys(77, firstRetainedBody)
+	firstRetainedPrefix := CyberSessionTranscriptLookupKeys(77, "", firstRetainedBody)
 	require.Equal(t, firstRetainedPrefix[len(firstRetainedPrefix)-1], keys[0])
 
-	fullKey := CyberSessionTranscriptBlockKeys(77, body)[0]
+	fullKey := CyberSessionTranscriptBlockKeys(77, "", body)[0]
 	require.Equal(t, fullKey, keys[len(keys)-1])
 }
 
@@ -397,11 +394,11 @@ func TestFindCyberSessionBlockedForRequestUsesScopeForTranscript(t *testing.T) {
 	nextCtx, _ := newCyberBlockTestCtx(nil, string(nextBody))
 	const clientIP = "203.0.113.20"
 	const userAgent = "Codex CLI 1.2.3"
-	blockKey := CyberSessionTranscriptBlockKeys(9, hitBody)[1]
+	blockKey := CyberSessionTranscriptBlockKeys(9, "", hitBody)[1]
 
 	// Without an active source scope, transcript candidates are never blocks.
 	require.Empty(t, svc.FindCyberSessionBlockedForRequest(ctx, 9, 0, nextCtx, nextBody, clientIP, userAgent))
-	scopeKey := CyberSessionScopeKey(9, clientIP, userAgent)
+	scopeKey := CyberSessionScopeKey(9, clientIP, userAgent, "")
 	svc.MarkCyberSessionBlocked(ctx, scopeKey, []string{blockKey})
 	require.Equal(t, blockKey, svc.FindCyberSessionBlockedForRequest(ctx, 9, 0, nextCtx, nextBody, clientIP, "Codex CLI 1.2.4"))
 }
@@ -424,10 +421,12 @@ func TestFindCyberSessionBlockedForRequestFailsClosedOnScopedTranscriptOverflow(
 	}
 	body, err := json.Marshal(map[string]any{"messages": messages})
 	require.NoError(t, err)
-	c, _ := newCyberBlockTestCtx(nil, string(body))
+	// [FORK-BAN-SCOPE] 行为变更：只有 scope 带 X-User-Id（单个终端用户）时 overflow 才
+	// fail-closed；无 X-User-Id 的情形见 TestFindCyberSessionBlockedForRequestOverflowFailsOpenWithoutEndUser。
+	c, _ := newCyberBlockTestCtx(map[string]string{"X-User-Id": "end-user-a"}, string(body))
 	require.Empty(t, svc.FindCyberSessionBlockedForRequest(ctx, apiKeyID, 0, c, body, clientIP, userAgent),
 		"overflow alone must not bypass the scope gate")
-	combo.store.scopes = map[string]bool{CyberSessionScopeKey(apiKeyID, clientIP, userAgent): true}
+	combo.store.scopes = map[string]bool{CyberSessionScopeKey(apiKeyID, clientIP, userAgent, "end-user-a"): true}
 
 	// 精确查找（sticky key + 显式会话 key，最多两把）永远先跑一次，是有界的；
 	// 这里要守住的是 overflow 之后不得再发 transcript 那次无界查找。
@@ -438,9 +437,9 @@ func TestFindCyberSessionBlockedForRequestFailsClosedOnScopedTranscriptOverflow(
 }
 
 func TestCyberSessionScopeKeyNormalizesUserAgentVersion(t *testing.T) {
-	base := CyberSessionScopeKey(7, "203.0.113.10", "Codex CLI 1.2.3")
+	base := CyberSessionScopeKey(7, "203.0.113.10", "Codex CLI 1.2.3", "")
 	require.NotEmpty(t, base)
-	require.Equal(t, base, CyberSessionScopeKey(7, "203.0.113.10", "Codex CLI 1.2.4"))
-	require.NotEqual(t, base, CyberSessionScopeKey(8, "203.0.113.10", "Codex CLI 1.2.3"))
-	require.NotEqual(t, base, CyberSessionScopeKey(7, "203.0.113.11", "Codex CLI 1.2.3"))
+	require.Equal(t, base, CyberSessionScopeKey(7, "203.0.113.10", "Codex CLI 1.2.4", ""))
+	require.NotEqual(t, base, CyberSessionScopeKey(8, "203.0.113.10", "Codex CLI 1.2.3", ""))
+	require.NotEqual(t, base, CyberSessionScopeKey(7, "203.0.113.11", "Codex CLI 1.2.3", ""))
 }

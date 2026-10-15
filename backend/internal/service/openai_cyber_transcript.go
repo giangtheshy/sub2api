@@ -24,7 +24,10 @@ const maxOpenAICyberTranscriptLookupKeys = 256
 // hashes plus the context key immediately before the latest user turn. The
 // context key requires model-generated history so shared first-turn templates
 // cannot block unrelated conversations.
-func deriveOpenAICyberTranscriptBlockKeys(apiKeyID int64, body []byte) openAICyberTranscriptBlockKeys {
+//
+// [FORK-BAN-SCOPE] endUserID（X-User-Id）非空时混入哈希：同一把 Key 下两个终端用户
+// 发出相同的短 prompt 不得共享 transcript key。为空时与上游派生完全一致。
+func deriveOpenAICyberTranscriptBlockKeys(apiKeyID int64, endUserID string, body []byte) openAICyberTranscriptBlockKeys {
 	if len(body) == 0 {
 		return openAICyberTranscriptBlockKeys{}
 	}
@@ -36,6 +39,10 @@ func deriveOpenAICyberTranscriptBlockKeys(apiKeyID int64, body []byte) openAICyb
 	h := sha256.New()
 	_, _ = h.Write([]byte("cyber-transcript:v3|api_key="))
 	_, _ = h.Write([]byte(strconv.FormatInt(apiKeyID, 10)))
+	if endUserID = strings.TrimSpace(endUserID); endUserID != "" {
+		_, _ = h.Write([]byte("|x_user_id="))
+		_, _ = h.Write([]byte(endUserID))
+	}
 	// Model and tool definitions are request configuration rather than history.
 	// Root instructions remain model-visible context and participate in identity.
 	for _, field := range []string{"instructions"} {
@@ -51,6 +58,12 @@ func deriveOpenAICyberTranscriptBlockKeys(apiKeyID int64, body []byte) openAICyb
 		_, _ = h.Write([]byte(field))
 		_, _ = h.Write([]byte("="))
 		_, _ = h.Write([]byte(canonical))
+	}
+	// [FORK-BAN-SCOPE] Anthropic 格式的顶层 system 同样是模型可见上下文，必须参与
+	// 派生，否则 system 不同、messages 相同的两个请求会撞同一把 key。
+	if system := openAICyberTranscriptSystemCanonical(root.Get("system")); system != "" {
+		_, _ = h.Write([]byte("|system="))
+		_, _ = h.Write([]byte(system))
 	}
 
 	appendSequence := func(sequence gjson.Result) openAICyberTranscriptBlockKeys {
@@ -121,6 +134,41 @@ func deriveOpenAICyberTranscriptBlockKeys(apiKeyID int64, body []byte) openAICyb
 		return openAICyberTranscriptBlockKeys{lookupKeys: []string{hex.EncodeToString(h.Sum(nil))}}
 	}
 	return openAICyberTranscriptBlockKeys{}
+}
+
+// openAICyberTranscriptSystemCanonical 把 Anthropic system（字符串或 text 块数组）
+// 规整成只含文本的稳定串。cache_control 等非内容字段被忽略；Claude Code 每次请求
+// 都会变化的 x-anthropic-billing-header 块被剔除，否则同一会话的 key 永远对不上。
+func openAICyberTranscriptSystemCanonical(system gjson.Result) string {
+	if !system.Exists() {
+		return ""
+	}
+	const billingHeaderPrefix = "x-anthropic-billing-header: "
+	if system.Type == gjson.String {
+		text := system.String()
+		if strings.TrimSpace(text) == "" || strings.HasPrefix(text, billingHeaderPrefix) {
+			return ""
+		}
+		encoded, _ := json.Marshal(text)
+		return string(encoded)
+	}
+	if !system.IsArray() {
+		return ""
+	}
+	parts := make([]string, 0, 4)
+	system.ForEach(func(_, block gjson.Result) bool {
+		text := block.Get("text").String()
+		if strings.TrimSpace(text) == "" || strings.HasPrefix(text, billingHeaderPrefix) {
+			return true
+		}
+		parts = append(parts, text)
+		return true
+	})
+	if len(parts) == 0 {
+		return ""
+	}
+	encoded, _ := json.Marshal(parts)
+	return string(encoded)
 }
 
 func openAICyberTranscriptItemStartsUserTurn(item gjson.Result) bool {

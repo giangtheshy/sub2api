@@ -81,6 +81,9 @@ type Request struct {
 	Model      string
 	Body       []byte
 	Stage      string
+	// [FORK-BAN-SCOPE] EndUserIdentity = service.EndUserBanIdentity(apiKey.User.ID, c)，
+	// 必须一路透传到 ContentModerationCheckInput，违规才会只封终端用户而不是整个账号。
+	EndUserIdentity string
 }
 
 func (r Request) Clone() Request {

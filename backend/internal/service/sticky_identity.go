@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/gin-gonic/gin"
+	"github.com/tidwall/gjson"
 )
 
 // 屏蔽标识的命中层级，用于管理端展示与排障。
@@ -22,7 +23,69 @@ const (
 	// 永远可用，保证"不带标识"的请求也有稳定 key，堵住返回空串即放行的漏洞；
 	// 代价是屏蔽范围等于整把 Key——没有信息可用来分辨是谁。
 	StickyIdentityKindAPIKeyUser = "apikey_user"
+	// StickyIdentityKindTranscript：没有任何请求级标识，屏蔽只落在 transcript
+	// 前缀 key 上（管理端展示用；见 IsPerEndUserStickyKind）。
+	StickyIdentityKindTranscript = "transcript"
 )
+
+// IsPerEndUserStickyKind 报告该层级的 key 是否能区分"同一把 Key 下的不同终端用户"。
+//
+// [FORK-BAN-SCOPE] cyber 会话屏蔽绝不能写/读 apikey_user 层的 key：转售商把所有
+// 终端用户经同一把 Key 转发，该层 key = hash(apiKey,user) 会一次封掉整把 Key。
+// 没有 X-User-Id / 会话时，只允许 transcript key 生效。
+func IsPerEndUserStickyKind(kind string) bool {
+	switch kind {
+	case StickyIdentityKindXUserIDSession, StickyIdentityKindXUserID, StickyIdentityKindSession:
+		return true
+	default:
+		return false
+	}
+}
+
+// CyberBlockEndUserID 返回客户端声明的终端用户标识（X-User-Id，已 trim），拿不到为空串。
+//
+// [FORK-BAN-SCOPE] 屏蔽表的写入侧与读取侧必须都经由这里取 X-User-Id 混入
+// 显式会话 key / transcript key / scope key，否则同 Key 下的终端用户会互相连坐。
+func CyberBlockEndUserID(c *gin.Context) string {
+	if c == nil {
+		return ""
+	}
+	for _, header := range stickyIdentityUserHeaders {
+		if v := strings.TrimSpace(c.GetHeader(header)); v != "" {
+			return v
+		}
+	}
+	return ""
+}
+
+// cyberBlockSessionID 解析 cyber 会话屏蔽使用的会话信号。
+//
+// [FORK-BAN-SCOPE] 先沿用 explicitOpenAISessionID（OpenAI/Codex 显式会话，保持
+// 既有 key 不变），再补 Claude Code 会话：X-Claude-Code-Session-Id 头 >
+// body metadata.user_id 内的 session。没有这一层时原生 /v1/messages 只能落到
+// X-User-Id，用户开新会话也逃不出屏蔽。不得改 explicitOpenAISessionID 本身——
+// 它同时决定调度粘性。
+func cyberBlockSessionID(c *gin.Context, body []byte) string {
+	if c == nil {
+		return ""
+	}
+	if sessionID := explicitOpenAISessionID(c, body); sessionID != "" {
+		return sessionID
+	}
+	if sessionID := ClaudeCodeSessionIDFromHeader(c); sessionID != "" {
+		return "cc:" + sessionID
+	}
+	if len(body) > 0 {
+		raw := gjson.GetBytes(body, "metadata.user_id").String()
+		if parsed := ParseMetadataUserID(raw); parsed != nil {
+			if sessionID := strings.TrimSpace(parsed.SessionID); sessionID != "" {
+				// 与 header 同一命名空间：同一会话无论从 header 还是 metadata 取到都同 key。
+				return "cc:" + sessionID
+			}
+		}
+	}
+	return ""
+}
 
 // stickyIdentityUserHeaders 是终端用户标识头，按优先级排列。
 // 与 Anthropic/OpenAI 生态常见约定一致（X-User-Id 为主）。
@@ -104,16 +167,10 @@ func StickyIdentity(apiKeyID, userID int64, c *gin.Context, body []byte) (kind s
 // 哈希输入与 StickyIdentity 完全一致——遮蔽串只是附加的展示信息，
 // 绝不参与 key 计算，否则历史屏蔽项会全部失配。
 func StickyIdentityDetailed(apiKeyID, userID int64, c *gin.Context, body []byte) StickyIdentityInfo {
-	xUserID := ""
-	if c != nil {
-		for _, header := range stickyIdentityUserHeaders {
-			if v := strings.TrimSpace(c.GetHeader(header)); v != "" {
-				xUserID = v
-				break
-			}
-		}
-	}
-	sessionID := explicitOpenAISessionID(c, body)
+	xUserID := CyberBlockEndUserID(c)
+	// [FORK-BAN-SCOPE] 会话信号含 Claude Code 会话（见 cyberBlockSessionID），
+	// 读写两侧都经由本函数派生，保证同一请求得到同一把 key。
+	sessionID := cyberBlockSessionID(c, body)
 
 	var kind string
 	var signals strings.Builder
@@ -189,4 +246,3 @@ func EndUserBanIdentity(userID int64, c *gin.Context) (masked string, key string
 	key = hex.EncodeToString(sum[:])
 	return key[:12], key
 }
-

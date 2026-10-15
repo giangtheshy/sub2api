@@ -102,6 +102,10 @@ func (r *contentModerationTestRepo) CountFlaggedByUserSince(ctx context.Context,
 		if log.UserID == nil || *log.UserID != userID || !log.Flagged || log.Action == ContentModerationActionHashBlock {
 			continue
 		}
+		// [FORK-BAN-SCOPE] 镜像真实 SQL：带终端用户标识的行不计入账号层。
+		if strings.TrimSpace(log.EndUserIdentity) != "" {
+			continue
+		}
 		if excludeCyberPolicy && log.Action == ContentModerationActionCyberPolicy {
 			continue
 		}

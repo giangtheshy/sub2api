@@ -133,6 +133,8 @@ func (h *GatewayHandler) recordAnthropicRefusalIfMarked(
 		// Anthropic 原生 body 不是 OpenAI transcript 形状，上游的 transcript 前缀
 		// key 在这里派生不出有意义的结果，因此只写本路径自己的 sticky key，
 		// 保持与合并前完全一致的屏蔽范围。
+		// [FORK-BAN-SCOPE] blockMeta.Key 为空（无 X-User-Id/会话）时绝不写：
+		// 退化成 (apiKey,user) 会封掉转售商整把 Key。
 		if blockOwner != nil && blockMeta.Key != "" {
 			blockOwner.MarkCyberSessionBlockedWithMeta(ctx, "", []string{blockMeta.Key}, blockMeta)
 		}
@@ -168,6 +170,9 @@ func (h *GatewayHandler) rejectIfCyberSessionBlockedNative(
 	if enabled, _ := h.openAIGatewayService.CyberSessionBlockRuntime(ctx); !enabled {
 		return empty, false
 	}
+	// [FORK-BAN-SCOPE] key 由 X-User-Id + Claude Code 会话（X-Claude-Code-Session-Id >
+	// metadata.user_id）组合派生，必须与 recordAnthropicRefusalIfMarked 写入的是同一把；
+	// 无 X-User-Id/会话时 Key 为空——不查 apikey_user 整把 Key 的 key。
 	meta := service.CyberSessionBlockMeta(apiKey, c, body)
 	if meta.Key == "" {
 		return empty, false
@@ -182,6 +187,7 @@ func (h *GatewayHandler) rejectIfCyberSessionBlockedNative(
 	service.MarkOpsClientBusinessLimited(c, service.OpsClientBusinessLimitedReasonLocalPolicyDenied)
 	c.JSON(http.StatusForbidden, gin.H{"type": "error", "error": gin.H{
 		"type":    "permission_error",
+		"code":    cyberSessionBlockedErrorCode,
 		"message": nativeCyberBlockedClientMsg,
 	}})
 	logger.L().With(zap.String("component", "handler.gateway.anthropic_refusal")).
@@ -194,8 +200,13 @@ func (h *GatewayHandler) rejectIfCyberSessionBlockedNative(
 	return meta, true
 }
 
-// endUserBannedClientMsg 与会话屏蔽同文案（网关无 i18n 协商通道）。
-const endUserBannedClientMsg = cyberSessionBlockedClientMsg
+// [FORK-BAN-SCOPE] 终端用户永久封禁有独立文案与 code，绝不能再复用会话屏蔽的
+// "请开启新会话"——换会话对永久封禁无效，复用会误导用户并让客服无法区分。
+// 双语单串（网关无 i18n 协商通道）；HTTP 403 + permission_error 保持不变。
+const (
+	endUserBannedClientMsg = "该终端用户已因违反网络安全策略被封禁，开启新会话无效，请联系服务提供方 / This end user is banned by cyber-security policy; starting a new session will not help. Please contact your service provider."
+	endUserBannedErrorCode = "end_user_banned_by_cyber_policy"
+)
 
 // rejectIfEndUserBannedNative 在选号之前检查终端用户永久封禁表。
 //
@@ -229,6 +240,7 @@ func (h *GatewayHandler) rejectIfEndUserBannedNative(
 	service.MarkOpsClientBusinessLimited(c, service.OpsClientBusinessLimitedReasonLocalPolicyDenied)
 	c.JSON(http.StatusForbidden, gin.H{"type": "error", "error": gin.H{
 		"type":    "permission_error",
+		"code":    endUserBannedErrorCode,
 		"message": endUserBannedClientMsg,
 	}})
 	logger.L().With(zap.String("component", "handler.gateway.end_user_ban")).

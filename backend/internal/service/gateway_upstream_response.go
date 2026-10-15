@@ -373,7 +373,9 @@ func (s *GatewayService) handleErrorResponse(ctx context.Context, resp *http.Res
 			account.ID, account.Name, resp.StatusCode, readErr)
 	}
 
-	// 硬阻断信号：403 + error.type=="permission_error"（组织/账号被策略封禁）。
+	// 硬阻断信号：403 + error.type=="permission_error" 且文案指向使用政策违规。
+	// [FORK-BAN-SCOPE] 组织/账号/凭据层的 403 不打标记（见 DetectAnthropicPermissionError），
+	// 否则账号故障会被记成终端用户违规并写会话屏蔽。
 	// 必须在 failover 吞掉错误之前打标记，否则 handler 事后读不到证据。
 	if ok, msg := DetectAnthropicPermissionError(resp.StatusCode, body); ok {
 		markAnthropicRefusalForAccount(c, account, AnthropicRefusalMark{

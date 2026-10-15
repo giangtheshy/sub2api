@@ -29,12 +29,17 @@ func TestDetectAnthropicRefusalJSON(t *testing.T) {
 }
 
 func TestDetectAnthropicPermissionError(t *testing.T) {
-	ok, msg := DetectAnthropicPermissionError(403, []byte(`{"type":"error","error":{"type":"permission_error","message":"blocked"}}`))
+	// [FORK-BAN-SCOPE] 行为变更：只有指向使用政策的文案才算硬信号；裸 "blocked" 这类
+	// 无法区分账号故障的文案不再计入（见 TestForkBanScope_PermissionErrorOnlyCountsUsagePolicy）。
+	ok, msg := DetectAnthropicPermissionError(403, []byte(`{"type":"error","error":{"type":"permission_error","message":"This request violates our Usage Policy"}}`))
 	if !ok {
 		t.Fatal("expected permission_error detected")
 	}
-	if msg != "blocked" {
-		t.Fatalf("expected message blocked, got %q", msg)
+	if msg != "This request violates our Usage Policy" {
+		t.Fatalf("unexpected message %q", msg)
+	}
+	if bad, _ := DetectAnthropicPermissionError(403, []byte(`{"type":"error","error":{"type":"permission_error","message":"blocked"}}`)); bad {
+		t.Fatal("ambiguous permission_error must not count as an end-user violation")
 	}
 	if bad, _ := DetectAnthropicPermissionError(403, []byte(`{"error":{"type":"rate_limit_error"}}`)); bad {
 		t.Fatal("rate_limit must not be permission_error")

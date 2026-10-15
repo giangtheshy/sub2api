@@ -186,17 +186,33 @@ func TestBuildCyberSessionBlockWritePlanCombinesExplicitAndTranscriptKeys(t *tes
 	c.Request.Header.Set("User-Agent", "client/1.2.3")
 
 	apiKey := &service.APIKey{ID: 7}
-	// 本地 sticky key 恒非空并排在首位，因此比上游多一把。
+	// [FORK-BAN-SCOPE] 行为变更：无 X-User-Id/会话时不再写 apikey_user 层 sticky key
+	// （那等于封整把 Key），只剩两把 transcript key。
 	plan := buildCyberSessionBlockWritePlan(apiKey, c, body)
-	require.Len(t, plan.keys, 3)
-	require.Equal(t, plan.meta.Key, plan.keys[0])
+	require.Len(t, plan.keys, 2)
+	require.Empty(t, plan.meta.Key)
+	require.Equal(t, service.StickyIdentityKindTranscript, plan.meta.Kind)
 	require.NotEmpty(t, plan.scopeKey)
+	headerlessScope := plan.scopeKey
 
+	// 有会话：sticky key 非空并排在首位，其后是显式会话 key 与 transcript key。
 	c.Request.Header.Set("session_id", "sess-explicit")
 	plan = buildCyberSessionBlockWritePlan(apiKey, c, body)
 	require.Len(t, plan.keys, 4)
 	require.Equal(t, plan.meta.Key, plan.keys[0])
 	require.NotEmpty(t, plan.scopeKey)
+
+	// X-User-Id 混入 scope 与全部 key：同一把 Key 下的其他终端用户不会命中。
+	c.Request.Header.Set("X-User-Id", "end-user-a")
+	planA := buildCyberSessionBlockWritePlan(apiKey, c, body)
+	c.Request.Header.Set("X-User-Id", "end-user-b")
+	planB := buildCyberSessionBlockWritePlan(apiKey, c, body)
+	require.Len(t, planA.keys, 4)
+	require.NotEqual(t, headerlessScope, planA.scopeKey)
+	require.NotEqual(t, planA.scopeKey, planB.scopeKey)
+	for _, k := range planA.keys {
+		require.NotContains(t, planB.keys, k, "end-user A's block keys must never cover end-user B")
+	}
 }
 
 // TestRecordCyberPolicyIfMarked_BlockKeyPlumbed verifies the 6th param is

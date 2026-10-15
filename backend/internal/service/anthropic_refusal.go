@@ -116,7 +116,13 @@ func DetectAnthropicRefusalSSEData(data string) bool {
 }
 
 // DetectAnthropicPermissionError 检测 HTTP 403 + error.type=="permission_error"
-// （组织/账号层的策略封禁）。403 的限流、过载等其它错误类型不计入。
+// 且错误文案明确指向"本次请求内容违反使用政策"的情形。403 的限流、过载等其它
+// 错误类型不计入。
+//
+// [FORK-BAN-SCOPE] 403 permission_error 同样用于账号/组织层故障（组织被禁用、
+// OAuth 凭据只限 Claude Code、token scope 不足、地区不可用……），这些由
+// RateLimitService.handle403 按账号故障处理（SetError），绝不能记成终端用户违规、
+// 也不能写会话屏蔽。只有文案命中使用政策关键词、且不含账号/组织层关键词时才算。
 func DetectAnthropicPermissionError(status int, payload []byte) (bool, string) {
 	if status != 403 || len(payload) == 0 || !gjson.ValidBytes(payload) {
 		return false, ""
@@ -125,7 +131,65 @@ func DetectAnthropicPermissionError(status int, payload []byte) (bool, string) {
 	if !strings.EqualFold(strings.TrimSpace(et), AnthropicRefusalSignalPermissionError) {
 		return false, ""
 	}
-	return true, strings.TrimSpace(gjson.GetBytes(payload, "error.message").String())
+	msg := strings.TrimSpace(gjson.GetBytes(payload, "error.message").String())
+	if !IsAnthropicUsagePolicyPermissionMessage(msg) {
+		return false, ""
+	}
+	return true, msg
+}
+
+// anthropicUsagePolicyMarkers 是"请求内容违反使用政策"的文案特征（小写）。
+var anthropicUsagePolicyMarkers = []string{
+	"usage policy",
+	"usage policies",
+	"acceptable use",
+	"anthropic.com/legal/aup",
+	"cyber",
+	"violates our",
+	"violate our",
+	"prohibited content",
+	"harmful content",
+}
+
+// anthropicAccountLevelMarkers 是账号/组织/凭据层故障的文案特征（小写）。
+// 命中任一即视为账号问题——哪怕同时提到 usage policy（例如"账号因违反使用政策被停用"
+// 是账号状态，不是本次请求的终端用户违规）。
+var anthropicAccountLevelMarkers = []string{
+	"organization",
+	"organisation",
+	"account",
+	"oauth",
+	"credential",
+	"token",
+	"api key",
+	"scope",
+	"billing",
+	"credit balance",
+	"subscription",
+	"region",
+	"country",
+	"workspace",
+}
+
+// IsAnthropicUsagePolicyPermissionMessage 判断 403 permission_error 的文案是否表示
+// "本次请求内容被使用政策拒绝"（终端用户违规），而非账号/组织层故障。
+// 空文案按账号故障处理（无法证明是内容问题时不罚终端用户）。
+func IsAnthropicUsagePolicyPermissionMessage(msg string) bool {
+	m := strings.ToLower(strings.TrimSpace(msg))
+	if m == "" {
+		return false
+	}
+	for _, marker := range anthropicAccountLevelMarkers {
+		if strings.Contains(m, marker) {
+			return false
+		}
+	}
+	for _, marker := range anthropicUsagePolicyMarkers {
+		if strings.Contains(m, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 // markAnthropicRefusalForAccount 补全账号信息后打标记。account 为 nil 时仍记录，

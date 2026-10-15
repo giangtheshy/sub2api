@@ -3993,12 +3993,13 @@ func writeEndUserBannedWSError(ctx context.Context, conn *coderws.Conn) {
 		"type":     "error",
 		"error": gin.H{
 			"type":    "permission_error",
-			"code":    "end_user_banned_by_cyber_policy",
+			"code":    endUserBannedErrorCode,
 			"message": endUserBannedClientMsg,
 		},
 	})
 	if err != nil {
-		payload = []byte(`{"event_id":"evt_end_user_banned","type":"error","error":{"type":"permission_error","code":"end_user_banned_by_cyber_policy","message":"This session is blocked by cyber-security policy, please start a new session"}}`)
+		// [FORK-BAN-SCOPE] 兜底帧也必须是封禁文案，不能退回"请开新会话"。
+		payload = []byte(`{"event_id":"evt_end_user_banned","type":"error","error":{"type":"permission_error","code":"end_user_banned_by_cyber_policy","message":"This end user is banned by cyber-security policy; starting a new session will not help. Please contact your service provider."}}`)
 	}
 	writeCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
 	defer cancel()
@@ -4110,6 +4111,10 @@ func buildCyberPolicyOpsErrorEntry(meta cyberPolicyOpsErrorMeta, mark *service.C
 // 双语单串：网关客户端面向中英用户，且本错误无 i18n 协商通道。
 const cyberSessionBlockedClientMsg = "该会话已被网络安全策略屏蔽，请开启新会话 / This session is blocked by cyber-security policy, please start a new session"
 
+// cyberSessionBlockedErrorCode 是会话屏蔽（TTL 冷却）的机器可读 code。
+// [FORK-BAN-SCOPE] 必须与 endUserBannedErrorCode 不同：客户端/客服靠它区分"换会话即可"与"永久封禁"。
+const cyberSessionBlockedErrorCode = "session_blocked_by_cyber_policy"
+
 // buildCyberSessionBlockedOpsEntry builds the ops_error_logs entry for a request
 // rejected locally by the cyber session block (F5a). Distinct error_type from
 // upstream `cyber_policy`; never feeds moderation logs / violation counting
@@ -4186,21 +4191,25 @@ func (h *OpenAIGatewayHandler) rejectIfEndUserBanned(c *gin.Context, apiKey *ser
 	// 回传；未提交时停拍后照常写 JSON（与会话屏蔽同一处理，见 #3887）。
 	if service.StopOpenAICompactSSEKeepaliveCommitted(c) {
 		service.MarkOpsStreamError(c, "permission_error", endUserBannedClientMsg, http.StatusForbidden)
-		if writeResponsesFailedSSE(c, "permission_error", "", endUserBannedClientMsg) {
+		if writeResponsesFailedSSE(c, "permission_error", endUserBannedErrorCode, endUserBannedClientMsg) {
 			h.logEndUserBanRejected(c, apiKey, model, masked)
 			return identity, true
 		}
 	}
+	// [FORK-BAN-SCOPE] 永久封禁必须用独立文案与 code（endUserBannedErrorCode）：
+	// 与会话屏蔽同文案会误导用户"开新会话"，客服也无从区分。HTTP 403 +
+	// permission_error 保持不变以兼容客户端。
 	switch format {
 	case cyberBlockFormatAnthropic:
 		c.JSON(http.StatusForbidden, gin.H{"type": "error", "error": gin.H{
 			"type":    "permission_error",
+			"code":    endUserBannedErrorCode,
 			"message": endUserBannedClientMsg,
 		}})
 	default: // cyberBlockFormatResponses 与 cyberBlockFormatChat：同构的 OpenAI error envelope
 		c.JSON(http.StatusForbidden, gin.H{"error": gin.H{
 			"type":    "permission_error",
-			"code":    "end_user_banned_by_cyber_policy",
+			"code":    endUserBannedErrorCode,
 			"message": endUserBannedClientMsg,
 		}})
 	}
@@ -4248,12 +4257,13 @@ func (h *OpenAIGatewayHandler) rejectIfCyberSessionBlocked(c *gin.Context, apiKe
 	case cyberBlockFormatAnthropic:
 		c.JSON(http.StatusForbidden, gin.H{"type": "error", "error": gin.H{
 			"type":    "permission_error",
+			"code":    cyberSessionBlockedErrorCode,
 			"message": cyberSessionBlockedClientMsg,
 		}})
 	default: // cyberBlockFormatResponses 与 cyberBlockFormatChat：同构的 OpenAI error envelope
 		c.JSON(http.StatusForbidden, gin.H{"error": gin.H{
 			"type":    "permission_error",
-			"code":    "session_blocked_by_cyber_policy",
+			"code":    cyberSessionBlockedErrorCode,
 			"message": cyberSessionBlockedClientMsg,
 		}})
 	}
@@ -4281,6 +4291,10 @@ func buildCyberSessionBlockWritePlan(apiKey *service.APIKey, c *gin.Context, bod
 		return plan
 	}
 	apiKeyID := apiKey.ID
+	// [FORK-BAN-SCOPE] meta.Key 在无 X-User-Id/会话时为空（不写 apikey_user 整把 Key 的
+	// key）；显式会话 / transcript / scope 都混入同一个 X-User-Id，必须与读取侧
+	// FindCyberSessionBlockedForRequest 的派生保持一致。
+	endUserID := service.CyberBlockEndUserID(c)
 	plan.meta = service.CyberSessionBlockMeta(apiKey, c, body)
 	plan.meta.Signal = "cyber_policy"
 	if plan.meta.Key != "" {
@@ -4289,10 +4303,10 @@ func buildCyberSessionBlockWritePlan(apiKey *service.APIKey, c *gin.Context, bod
 	if key := service.CyberSessionExplicitBlockKey(apiKeyID, c, body); key != "" {
 		plan.keys = append(plan.keys, key)
 	}
-	transcriptKeys := service.CyberSessionTranscriptBlockKeys(apiKeyID, body)
+	transcriptKeys := service.CyberSessionTranscriptBlockKeys(apiKeyID, endUserID, body)
 	plan.keys = append(plan.keys, transcriptKeys...)
 	if len(transcriptKeys) > 0 {
-		plan.scopeKey = cyberSessionScopeKey(apiKeyID, c)
+		plan.scopeKey = cyberSessionScopeKey(apiKeyID, c, endUserID)
 	}
 	return plan
 }
@@ -4309,11 +4323,11 @@ func findBlockedCyberSessionKey(ctx context.Context, gatewayService *service.Ope
 	return gatewayService.FindCyberSessionBlockedForRequest(ctx, apiKey.ID, apiKeyUserID(apiKey), c, body, clientIP, userAgent)
 }
 
-func cyberSessionScopeKey(apiKeyID int64, c *gin.Context) string {
+func cyberSessionScopeKey(apiKeyID int64, c *gin.Context, endUserID string) string {
 	if c == nil {
 		return ""
 	}
-	return service.CyberSessionScopeKey(apiKeyID, strings.TrimSpace(ip.GetClientIP(c)), c.GetHeader("User-Agent"))
+	return service.CyberSessionScopeKey(apiKeyID, strings.TrimSpace(ip.GetClientIP(c)), c.GetHeader("User-Agent"), endUserID)
 }
 
 // enqueueCyberSessionBlockedOpsEntry captures request meta and enqueues the

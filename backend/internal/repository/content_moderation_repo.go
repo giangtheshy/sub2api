@@ -202,6 +202,8 @@ func (r *contentModerationRepository) CountFlaggedByUserSince(ctx context.Contex
 	// SQL 中的 'cyber_policy' 字面量须与 service.ContentModerationActionCyberPolicy 保持一致。
 	// 'cyber_log_only' matches service.ContentModerationModeCyberLogOnly; these
 	// events remain evidence but never become penalties after allowlist removal.
+	// [FORK-BAN-SCOPE] 只统计 end_user_identity 为空/NULL 的行：带 X-User-Id 的违规只归终端用户层，
+	// 转售商下 N 个不同终端客户的违规绝不能累加成整个账号的封号。merge upstream 时必须保留该条件。
 	var count int
 	err := r.db.QueryRowContext(ctx, `
 WITH last_auto_ban AS (
@@ -213,6 +215,7 @@ SELECT COUNT(*)
 FROM content_moderation_logs
 WHERE user_id = $1
   AND flagged = TRUE
+  AND COALESCE(end_user_identity, '') = ''
   AND action <> 'hash_block'
   AND mode <> 'cyber_log_only'
   AND mode <> 'risk_control_log_only'

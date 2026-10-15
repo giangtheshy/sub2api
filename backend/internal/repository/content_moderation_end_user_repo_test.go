@@ -104,6 +104,26 @@ func TestCountFlaggedByEndUserSince_ResetsOnEndUserBanAnchor(t *testing.T) {
 	require.NoError(t, mock.ExpectationsWereMet())
 }
 
+// [FORK-BAN-SCOPE] 账号层计数只统计无终端用户标识的行：转售商下多个终端客户的违规
+// 不能累加成整个账号的封号。
+func TestCountFlaggedByUserSince_ExcludesEndUserIdentityRows(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	defer func() { _ = db.Close() }()
+
+	repo := NewContentModerationRepository(db)
+	since := time.Now().Add(-time.Hour)
+	mock.ExpectQuery(regexp.QuoteMeta("AND COALESCE(end_user_identity, '') = ''")).
+		WithArgs(int64(1001), since, false).
+		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(1))
+
+	count, err := repo.CountFlaggedByUserSince(context.Background(), 1001, since, false)
+
+	require.NoError(t, err)
+	require.Equal(t, 1, count)
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
 // 空标识不查库：没有 X-User-Id 就没有终端用户可言。
 func TestCountFlaggedByEndUserSince_EmptyIdentitySkipsQuery(t *testing.T) {
 	db, mock, err := sqlmock.New()
