@@ -1,6 +1,7 @@
 package service
 
 import (
+	"log/slog"
 	"strings"
 
 	"github.com/gin-gonic/gin"
@@ -151,29 +152,37 @@ var anthropicUsagePolicyMarkers = []string{
 	"harmful content",
 }
 
-// anthropicAccountLevelMarkers 是账号/组织/凭据层故障的文案特征（小写）。
-// 命中任一即视为账号问题——哪怕同时提到 usage policy（例如"账号因违反使用政策被停用"
-// 是账号状态，不是本次请求的终端用户违规）。
+// anthropicAccountLevelMarkers 是账号/组织/凭据层故障的**窄**文案特征（小写）。
+//
+// [FORK-BAN-SCOPE] 只放 Anthropic 账号故障的具体短语，不放 "account"/"token"/"scope"
+// 这类泛词——真实的使用政策拒绝常带"If you believe your account was flagged…"，
+// 泛词会让它漏判。命中任一即视为账号问题（交给 handle403 处理），优先于政策关键词。
 var anthropicAccountLevelMarkers = []string{
-	"organization",
-	"organisation",
-	"account",
-	"oauth",
-	"credential",
-	"token",
-	"api key",
-	"scope",
-	"billing",
+	"organization has been disabled",
+	"organisation has been disabled",
+	"organization has been blocked",
+	"organisation has been blocked",
+	"organization is disabled",
+	"oauth authentication is currently not allowed",
+	"only authorized for use with claude code",
+	"oauth token",
+	"invalid api key",
 	"credit balance",
-	"subscription",
-	"region",
-	"country",
+	"billing",
+	"not available in your region",
+	"country, region, or territory",
+	"region is not supported",
 	"workspace",
+	"account has been disabled",
+	"account has been suspended",
+	"account is disabled",
+	"account is suspended",
 }
 
 // IsAnthropicUsagePolicyPermissionMessage 判断 403 permission_error 的文案是否表示
 // "本次请求内容被使用政策拒绝"（终端用户违规），而非账号/组织层故障。
-// 空文案按账号故障处理（无法证明是内容问题时不罚终端用户）。
+// 空文案或未命中政策关键词按账号故障处理（无法证明是内容问题时不罚终端用户），
+// 并打一条 Info 日志，便于发现漏判的新文案。
 func IsAnthropicUsagePolicyPermissionMessage(msg string) bool {
 	m := strings.ToLower(strings.TrimSpace(msg))
 	if m == "" {
@@ -189,6 +198,7 @@ func IsAnthropicUsagePolicyPermissionMessage(msg string) bool {
 			return true
 		}
 	}
+	slog.Info("anthropic.permission_error_not_counted_as_violation", "message", truncateForLog([]byte(m), 300))
 	return false
 }
 

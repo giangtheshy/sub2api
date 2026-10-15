@@ -4142,11 +4142,17 @@ const cyberPolicyRecordedKey = "ops_cyber_recorded"
 
 // apiKeyUserID 返回 API Key 归属用户 ID（缺失时为 0）。
 // 屏蔽标识的兜底层需要它：无显式会话标识时按 (apiKey,user) 粘住违规主体。
+// [FORK-BAN-SCOPE] 终端用户封禁 / cyber 会话屏蔽的读写两侧都用这里的 userID 派生 key。
+// 优先 User.ID（保持历史封禁项的哈希不变），User 未加载时回退 apiKey.UserID，
+// 否则读侧拿到 0、写侧拿到真实 ID，屏蔽会静默失配。
 func apiKeyUserID(apiKey *service.APIKey) int64 {
-	if apiKey == nil || apiKey.User == nil {
+	if apiKey == nil {
 		return 0
 	}
-	return apiKey.User.ID
+	if apiKey.User != nil && apiKey.User.ID != 0 {
+		return apiKey.User.ID
+	}
+	return apiKey.UserID
 }
 
 // cyberPolicyOpsErrorMeta carries request-scoped fields captured outside the

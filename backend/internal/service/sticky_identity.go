@@ -229,16 +229,8 @@ const endUserBanIdentityPrefix = "end_user"
 //   - masked：可安全展示的短摘要（哈希前缀），绝不含原始标识；
 //   - key：封禁表主键，sha256("end_user|u<userID>|x:<X-User-Id>")。
 func EndUserBanIdentity(userID int64, c *gin.Context) (masked string, key string) {
-	if c == nil {
-		return "", ""
-	}
-	xUserID := ""
-	for _, header := range stickyIdentityUserHeaders {
-		if v := strings.TrimSpace(c.GetHeader(header)); v != "" {
-			xUserID = v
-			break
-		}
-	}
+	// [FORK-BAN-SCOPE] 与 cyber 屏蔽共用同一个 X-User-Id 解析，避免两处读头逻辑漂移。
+	xUserID := CyberBlockEndUserID(c)
 	if xUserID == "" {
 		return "", ""
 	}

@@ -295,6 +295,10 @@ func TestForkBanScope_PermissionErrorOnlyCountsUsagePolicy(t *testing.T) {
 		{"Your account has been disabled for violating our Usage Policy", false},
 		{"This credential is only authorized for use with Claude Code and cannot be used for other API requests.", false},
 		{"OAuth token does not meet scope requirement user:profile", false},
+		// 泛词 account/token/scope 不能让真实的政策拒绝漏判。
+		{"This request violates our Usage Policy. If you believe your account was flagged in error, contact support.", true},
+		{"OAuth authentication is currently not allowed for this organization.", false},
+		{"Anthropic services are not available in your region", false},
 		{"Request not allowed", false},
 		{"", false},
 	}
