@@ -2395,9 +2395,9 @@
         />
       </div>
 
-      <!-- 配额控制 (非 Anthropic apikey/bedrock) -->
+      <!-- 配额控制 (非 Anthropic apikey/bedrock，以及 Vertex service_account) -->
       <div
-        v-else-if="form.type === 'apikey' || form.type === 'bedrock'"
+        v-else-if="supportsAccountQuota(form.type)"
         class="border-t border-gray-200 pt-4 dark:border-dark-600 space-y-4"
       >
         <div class="mb-3">
@@ -4278,6 +4278,7 @@ import {
   parseDateTimeLocalInput
 } from '@/utils/format'
 import { createStableObjectKeyResolver } from '@/utils/stableObjectKey'
+import { supportsAccountQuota } from '@/utils/accountQuota'
 import { getAccountExpiryTimestamp } from '@/components/account/accountExpiry'
 import { VERTEX_LOCATION_OPTIONS } from '@/constants/account'
 import {
@@ -6411,9 +6412,9 @@ const buildAccountPayload = (
   // 因此排除列表只在此处注入一次，而不是散落到九个 model_mapping 写入点——
   // 后者只要漏掉一个，该类型账号的排除就会静默失效。
   applyExcludedModels(credentials)
-  // Inject quota limits for apikey/bedrock accounts
+  // Inject quota limits for apikey/bedrock/service_account accounts
   let finalExtra = withUpstreamRequestIdHeader(extra)
-  if (type === 'apikey' || type === 'bedrock') {
+  if (supportsAccountQuota(type)) {
     const quotaExtra: Record<string, unknown> = { ...(finalExtra || {}) }
     if (editQuotaLimit.value != null && editQuotaLimit.value > 0) {
       quotaExtra.quota_limit = editQuotaLimit.value
