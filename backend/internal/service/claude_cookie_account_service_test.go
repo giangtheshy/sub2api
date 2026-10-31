@@ -49,7 +49,7 @@ func (c *cookieOrgClient) DeleteConversation(context.Context, string, string, st
 // A Netscape export, the format a browser cookie extension produces. The
 // sessionKey value is fabricated.
 const netscapeCookieExport = "# Netscape HTTP Cookie File\n" +
-	"#HttpOnly_.claude.ai\tTRUE\t/\tTRUE\t1789199243\tsessionKey\tsk-ant-sid02-testvalue\n" +
+	"#HttpOnly_.claude.ai\tTRUE\t/\tTRUE\t4102444800\tsessionKey\tsk-ant-sid02-testvalue\n" +
 	".claude.ai\tTRUE\t/\tTRUE\t1818337664\tlastActiveOrg\t16f945da-3cc2-413b-be20-3681008d4613\n" +
 	".claude.ai\tTRUE\t/\tTRUE\t1818337664\tuser-sidebar-visible-on-load\ttrue\n"
 

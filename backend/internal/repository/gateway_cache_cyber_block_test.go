@@ -26,15 +26,15 @@ func TestCyberSessionBlockMeta_SetListDelete(t *testing.T) {
 	cache, _ := newCyberBlockTestCache(t)
 
 	now := time.Now().UTC().Truncate(time.Second)
-	require.NoError(t, cache.SetCyberSessionBlockedMeta(ctx, "key-a", service.CyberBlockMeta{
+	require.NoError(t, cache.SetCyberSessionBlockedMeta(ctx, "", []string{"key-a"}, service.CyberBlockMeta{
 		Key: "key-a", Kind: "x_user_id", Masked: "abc123", Signal: "refusal", BlockedAt: now,
 	}, time.Hour))
-	require.NoError(t, cache.SetCyberSessionBlockedMeta(ctx, "key-b", service.CyberBlockMeta{
+	require.NoError(t, cache.SetCyberSessionBlockedMeta(ctx, "", []string{"key-b"}, service.CyberBlockMeta{
 		Key: "key-b", Kind: "session", Masked: "def456", Signal: "permission_error", BlockedAt: now,
 	}, time.Hour))
 
 	// 写入 meta 后，既有的存在性查询必须照常工作（向后兼容）。
-	blocked, err := cache.IsCyberSessionBlocked(ctx, "key-a")
+	blocked, err := isCyberBlocked(ctx, cache, "key-a")
 	require.NoError(t, err)
 	require.True(t, blocked)
 
@@ -52,7 +52,7 @@ func TestCyberSessionBlockMeta_SetListDelete(t *testing.T) {
 	require.False(t, byKey["key-a"].ExpiresAt.IsZero(), "list must expose when the block lapses")
 
 	require.NoError(t, cache.DeleteCyberSessionBlock(ctx, "key-a"))
-	blocked, err = cache.IsCyberSessionBlocked(ctx, "key-a")
+	blocked, err = isCyberBlocked(ctx, cache, "key-a")
 	require.NoError(t, err)
 	require.False(t, blocked, "unblock must take effect immediately")
 
@@ -67,10 +67,10 @@ func TestCyberSessionBlockMeta_ExpiredEntriesDropOut(t *testing.T) {
 	ctx := context.Background()
 	cache, mr := newCyberBlockTestCache(t)
 
-	require.NoError(t, cache.SetCyberSessionBlockedMeta(ctx, "short", service.CyberBlockMeta{
+	require.NoError(t, cache.SetCyberSessionBlockedMeta(ctx, "", []string{"short"}, service.CyberBlockMeta{
 		Key: "short", Kind: "session", Signal: "refusal", BlockedAt: time.Now(),
 	}, time.Minute))
-	require.NoError(t, cache.SetCyberSessionBlockedMeta(ctx, "long", service.CyberBlockMeta{
+	require.NoError(t, cache.SetCyberSessionBlockedMeta(ctx, "", []string{"long"}, service.CyberBlockMeta{
 		Key: "long", Kind: "session", Signal: "refusal", BlockedAt: time.Now(),
 	}, time.Hour))
 
@@ -92,12 +92,12 @@ func TestCyberSessionBlockMeta_LegacyEntriesAreTolerated(t *testing.T) {
 	ctx := context.Background()
 	cache, _ := newCyberBlockTestCache(t)
 
-	require.NoError(t, cache.SetCyberSessionBlocked(ctx, "legacy", time.Hour))
+	require.NoError(t, cache.SetCyberSessionBlocked(ctx, "", []string{"legacy"}, time.Hour))
 	items, err := cache.ListCyberSessionBlocks(ctx)
 	require.NoError(t, err)
 	require.Empty(t, items, "legacy markers carry no metadata and simply do not list")
 
-	blocked, err := cache.IsCyberSessionBlocked(ctx, "legacy")
+	blocked, err := isCyberBlocked(ctx, cache, "legacy")
 	require.NoError(t, err)
 	require.True(t, blocked, "legacy markers must still block")
 }
@@ -106,4 +106,11 @@ func TestCyberSessionBlockMeta_DeleteIsIdempotent(t *testing.T) {
 	ctx := context.Background()
 	cache, _ := newCyberBlockTestCache(t)
 	require.NoError(t, cache.DeleteCyberSessionBlock(ctx, "never-existed"))
+}
+
+// isCyberBlocked adapts the single-key existence check these tests were written
+// against to the batched FindCyberSessionBlocked API.
+func isCyberBlocked(ctx context.Context, cache *gatewayCache, key string) (bool, error) {
+	hit, err := cache.FindCyberSessionBlocked(ctx, []string{key})
+	return hit != "", err
 }
