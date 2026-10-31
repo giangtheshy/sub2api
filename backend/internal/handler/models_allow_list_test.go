@@ -34,6 +34,45 @@ func TestModelsListingUnchangedWithoutAnAllowList(t *testing.T) {
 	}
 }
 
+// For OpenAI, GetAvailableModels returns an empty non-nil list when every mapped
+// model is retired. That answer is authoritative: falling back to the defaults
+// would resurrect retired IDs (gpt-5.5) that dispatch then refuses.
+func TestAllowListListingSourceKeepsAuthoritativeEmptyOpenAICatalog(t *testing.T) {
+	got := allowListListingSource(service.PlatformOpenAI, []string{})
+
+	if got == nil || len(got) != 0 {
+		t.Errorf("source = %v, want the empty catalog kept", got)
+	}
+}
+
+func TestAllowListListingSourceFallsBackToDefaults(t *testing.T) {
+	cases := []struct {
+		platform  string
+		available []string
+	}{
+		{service.PlatformOpenAI, nil},
+		{service.PlatformAnthropic, nil},
+		{service.PlatformAnthropic, []string{}},
+	}
+	for _, tc := range cases {
+		got := allowListListingSource(tc.platform, tc.available)
+		want := defaultModelIDsForPlatform(tc.platform)
+		if strings.Join(got, ",") != strings.Join(want, ",") {
+			t.Errorf("%s %#v: source = %v, want defaults %v", tc.platform, tc.available, got, want)
+		}
+	}
+}
+
+func TestAllowListListingSourceKeepsNonEmptyCatalog(t *testing.T) {
+	available := []string{"gpt-5.2"}
+
+	got := allowListListingSource(service.PlatformOpenAI, available)
+
+	if strings.Join(got, ",") != "gpt-5.2" {
+		t.Errorf("source = %v, want %v", got, available)
+	}
+}
+
 // A list that filters everything out must yield an empty list, not fall back to
 // the unfiltered one — silently serving what the operator excluded would be the
 // worst possible reading of an allow-list.

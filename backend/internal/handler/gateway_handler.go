@@ -1190,9 +1190,7 @@ func (h *GatewayHandler) Models(c *gin.Context) {
 		if platform == service.PlatformComposite {
 			source = h.compositeAvailableModels(c.Request.Context(), groupID, "", true)
 		}
-		if len(source) == 0 {
-			source = defaultModelIDsForPlatform(platform)
-		}
+		source = allowListListingSource(platform, source)
 		if group.ModelAllowlistEnabled() {
 			source = group.ModelAllowlist.FilterForListing(source)
 		}
@@ -1500,6 +1498,16 @@ func modelListingSource(platform string, availableModels, fallbackModels []strin
 		return mergeModelIDs(availableModels, fallbackModels)
 	}
 	return availableModels
+}
+
+// allowListListingSource picks the catalogue the group allow-list filters. An
+// empty OpenAI result is authoritative (every mapped model is retired), as in
+// modelListingSource; for nil, and on other platforms, the defaults apply.
+func allowListListingSource(platform string, availableModels []string) []string {
+	if len(availableModels) > 0 || (platform == service.PlatformOpenAI && availableModels != nil) {
+		return availableModels
+	}
+	return defaultModelIDsForPlatform(platform)
 }
 
 // filterModelsByGroupAllowList drops models the group's allow-list would reject
