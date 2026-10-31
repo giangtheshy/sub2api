@@ -622,7 +622,8 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 		}
 
 		// 检查是否需要通用重试（排除400，因为400已经在上面特殊处理过了）
-		if resp.StatusCode >= 400 && resp.StatusCode != 400 && s.shouldRetryUpstreamError(account, resp.StatusCode) {
+		// [FORK-BAN-SCOPE] 403 使用政策拒绝不重试：同样的内容只会再次被拒。
+		if resp.StatusCode >= 400 && resp.StatusCode != 400 && s.shouldRetryUpstreamError(account, resp.StatusCode) && !s.isAnthropicUsagePolicyRejection(account, resp) {
 			if attempt < maxRetryAttempts {
 				elapsed := time.Since(retryStart)
 				if elapsed >= maxRetryElapsed {
@@ -683,6 +684,12 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 		return nil, errors.New("upstream request failed: empty response")
 	}
 	defer func() { _ = resp.Body.Close() }()
+
+	// [FORK-BAN-SCOPE] 403 使用政策拒绝是对本次请求内容的裁决：不换号、不罚账号，
+	// 直接回给客户端并打硬拒答标记，由 handler 收尾计入风控与封禁。
+	if s.isAnthropicUsagePolicyRejection(account, resp) {
+		return s.handleErrorResponse(ctx, resp, c, account, reqModel)
+	}
 
 	// 处理重试耗尽的情况
 	if resp.StatusCode >= 400 && s.shouldRetryUpstreamError(account, resp.StatusCode) {

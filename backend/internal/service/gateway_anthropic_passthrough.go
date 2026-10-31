@@ -121,7 +121,8 @@ func (s *GatewayService) forwardAnthropicAPIKeyPassthroughWithInput(
 		}
 
 		// 透传分支禁止 400 请求体降级重试（该重试会改写请求体）
-		if resp.StatusCode >= 400 && resp.StatusCode != 400 && s.shouldRetryUpstreamError(account, resp.StatusCode) {
+		// [FORK-BAN-SCOPE] 403 使用政策拒绝不重试：同样的内容只会再次被拒。
+		if resp.StatusCode >= 400 && resp.StatusCode != 400 && s.shouldRetryUpstreamError(account, resp.StatusCode) && !s.isAnthropicUsagePolicyRejection(account, resp) {
 			if attempt < maxRetryAttempts {
 				elapsed := time.Since(retryStart)
 				if elapsed >= maxRetryElapsed {
@@ -174,6 +175,12 @@ func (s *GatewayService) forwardAnthropicAPIKeyPassthroughWithInput(
 		return nil, errors.New("upstream request failed: empty response")
 	}
 	defer func() { _ = resp.Body.Close() }()
+
+	// [FORK-BAN-SCOPE] 403 使用政策拒绝是对本次请求内容的裁决：不换号、不罚账号，
+	// 直接回给客户端并打硬拒答标记，由 handler 收尾计入风控与封禁。
+	if s.isAnthropicUsagePolicyRejection(account, resp) {
+		return s.handleErrorResponse(ctx, resp, c, account, input.RequestModel)
+	}
 
 	if resp.StatusCode >= 400 && s.shouldRetryUpstreamError(account, resp.StatusCode) {
 		if s.shouldFailoverUpstreamError(resp.StatusCode) {

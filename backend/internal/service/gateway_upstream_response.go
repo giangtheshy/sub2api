@@ -377,13 +377,17 @@ func (s *GatewayService) handleErrorResponse(ctx context.Context, resp *http.Res
 	// [FORK-BAN-SCOPE] 组织/账号/凭据层的 403 不打标记（见 DetectAnthropicPermissionError），
 	// 否则账号故障会被记成终端用户违规并写会话屏蔽。
 	// 必须在 failover 吞掉错误之前打标记，否则 handler 事后读不到证据。
-	if ok, msg := DetectAnthropicPermissionError(resp.StatusCode, body); ok {
+	usagePolicyRejected, policyMsg := DetectAnthropicPermissionError(resp.StatusCode, body)
+	if usagePolicyRejected {
 		markAnthropicRefusalForAccount(c, account, AnthropicRefusalMark{
 			Signal:         AnthropicRefusalSignalPermissionError,
-			Message:        msg,
+			Message:        policyMsg,
 			UpstreamStatus: resp.StatusCode,
 		})
 	}
+	// [FORK-BAN-SCOPE] Anthropic 账号上的使用政策拒绝不是账号故障：不进 handle403 的
+	// 账号处罚（SetError），并把拒绝原样告知客户端（见下方）。
+	anthropicUsagePolicy := usagePolicyRejected && account.Platform == PlatformAnthropic
 
 	// 调试日志：打印上游错误响应
 	logger.LegacyPrintf("service.gateway", "[Forward] Upstream error (non-retryable): Account=%d(%s) Status=%d RequestID=%s Body=%s",
@@ -430,7 +434,7 @@ func (s *GatewayService) handleErrorResponse(ctx context.Context, resp *http.Res
 
 	// 处理上游错误，标记账号状态
 	shouldDisable := false
-	if s.rateLimitService != nil {
+	if s.rateLimitService != nil && !anthropicUsagePolicy {
 		if len(requestedModel) > 0 {
 			shouldDisable = s.rateLimitService.HandleUpstreamError(ctx, account, resp.StatusCode, resp.Header, body, requestedModel[0])
 		} else {
@@ -481,6 +485,13 @@ func (s *GatewayService) handleErrorResponse(ctx context.Context, resp *http.Res
 			return nil, fmt.Errorf("upstream error: %d (passthrough rule matched)", resp.StatusCode)
 		}
 		return nil, fmt.Errorf("upstream error: %d (passthrough rule matched) message=%s", resp.StatusCode, summary)
+	}
+
+	// [FORK-BAN-SCOPE] 使用政策拒绝是对用户本次请求的裁决，与 400 一样原样告知客户端，
+	// 而不是伪装成"上游禁止访问，请联系管理员"的 502。
+	if anthropicUsagePolicy {
+		c.Data(http.StatusForbidden, "application/json", body)
+		return nil, fmt.Errorf("upstream error: %d message=%s", resp.StatusCode, upstreamMsg)
 	}
 
 	// 根据状态码返回适当的自定义错误响应（不透传上游详细信息）

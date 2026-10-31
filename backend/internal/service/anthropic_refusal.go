@@ -1,7 +1,10 @@
 package service
 
 import (
+	"bytes"
+	"io"
 	"log/slog"
+	"net/http"
 	"strings"
 
 	"github.com/gin-gonic/gin"
@@ -213,4 +216,22 @@ func markAnthropicRefusalForAccount(c *gin.Context, account *Account, mark Anthr
 		mark.AccountName = account.Name
 	}
 	MarkAnthropicRefusal(c, mark)
+}
+
+// isAnthropicUsagePolicyRejection 判断 resp 是否为针对本次请求内容的 403 使用政策拒绝
+// （判据见 DetectAnthropicPermissionError）。会读取错误 body 并回绕 resp.Body，
+// 调用方后续的错误处理仍能读到完整内容。
+//
+// [FORK-BAN-SCOPE] 这类 403 说的是请求本身，不是账号：重试或换号只会把违规内容
+// 重放到更多账号上，而通用 403 处理（handle403 → SetError）会把每个经手账号都置错，
+// 终端用户却从未被记录。调用方据此走终止路径：不重试、不换号、不罚账号。
+func (s *GatewayService) isAnthropicUsagePolicyRejection(account *Account, resp *http.Response) bool {
+	if account == nil || account.Platform != PlatformAnthropic || resp == nil || resp.StatusCode != http.StatusForbidden || resp.Body == nil {
+		return false
+	}
+	body, _ := s.readUpstreamErrorBody(resp)
+	_ = resp.Body.Close()
+	resp.Body = io.NopCloser(bytes.NewReader(body))
+	ok, _ := DetectAnthropicPermissionError(resp.StatusCode, body)
+	return ok
 }
