@@ -22,6 +22,7 @@ var errOpenAICyberPolicyForwarded = errors.New("openai cyber_policy forwarded to
 // CyberPolicyMark 记录一次 cyber_policy 硬阻断的上游证据。
 type CyberPolicyMark struct {
 	Code           string // 固定 "cyber_policy"
+	Category       string // 风控中心 highest_category；留空即 "cyber_policy"（见 CyberPolicyRecordInput.Category）
 	Message        string // 上游 error.message
 	Body           string // 上游 response.failed / 400 原始 body（已截断；未脱敏，ops_error 落库由 sanitizeErrorBodyForStorage、风控日志由 redactContentModerationSecrets 统一脱敏）
 	UpstreamStatus int    // 上游 HTTP 状态（流式=200，非流式=400）

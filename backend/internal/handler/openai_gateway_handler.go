@@ -4581,6 +4581,7 @@ func (h *OpenAIGatewayHandler) recordCyberPolicyIfMarked(c *gin.Context, apiKey 
 		defer cancel()
 		if cmSvc != nil {
 			cmSvc.RecordCyberPolicyEvent(ctx, service.CyberPolicyRecordInput{
+				Category:  mark.Category,
 				LogOnly:   cyberLogOnly,
 				RequestID: requestID,
 				// 空串表示请求没带 X-User-Id：终端用户层不参与判定，交账号层兜底。

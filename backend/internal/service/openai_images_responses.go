@@ -45,6 +45,11 @@ type OpenAIImagesUpstreamError struct {
 	// with words instead of an image"), not the account — see
 	// shouldCoolOpenAIImagesToolForError.
 	SynthesizedFromModelText bool
+
+	// ModelTextPolicyRefusal marks a content-policy error inferred from the
+	// model declining in prose. [FORK-BAN-SCOPE] Like an Anthropic end_turn soft
+	// refusal it never counts as a violation — see IsOpenAIImagesPolicyRejection.
+	ModelTextPolicyRefusal bool
 }
 
 func (e *OpenAIImagesUpstreamError) Error() string {
@@ -728,10 +733,11 @@ func openAIImagesTextFallbackErrorForText(text string) *OpenAIImagesUpstreamErro
 	}
 	if isOpenAIImagesContentPolicyRefusal(text) {
 		return &OpenAIImagesUpstreamError{
-			StatusCode: http.StatusBadRequest,
-			ErrorType:  "image_generation_user_error",
-			Code:       "content_policy_violation",
-			Message:    sanitizeUpstreamErrorMessage(text),
+			StatusCode:             http.StatusBadRequest,
+			ErrorType:              "image_generation_user_error",
+			Code:                   "content_policy_violation",
+			Message:                sanitizeUpstreamErrorMessage(text),
+			ModelTextPolicyRefusal: true,
 		}
 	}
 	return &OpenAIImagesUpstreamError{

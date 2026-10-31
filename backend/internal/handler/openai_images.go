@@ -103,6 +103,14 @@ func (h *OpenAIGatewayHandler) Images(c *gin.Context) {
 		h.openAISecurityAuditError(c, decision)
 		return
 	}
+	// [FORK-BAN-SCOPE] 与文本接口同一套准入：终端用户永久封禁先判（只读 header），再查会话屏蔽。
+	endUserIdentity, endUserRejected := h.rejectIfEndUserBanned(c, apiKey, requestModel, cyberBlockFormatChat)
+	if endUserRejected {
+		return
+	}
+	if h.rejectIfCyberSessionBlocked(c, apiKey, body, requestModel, cyberBlockFormatChat) {
+		return
+	}
 	imageReleaseFunc, acquired := h.acquireImageGenerationSlot(c, streamStarted)
 	if !acquired {
 		return
@@ -288,6 +296,15 @@ func (h *OpenAIGatewayHandler) Images(c *gin.Context) {
 					} else {
 						h.gatewayService.ReportOpenAIAccountScheduleResult(account, openAIAccountScheduleModel(c, account, requestModel, false, result), true, nil)
 					}
+					// [FORK-BAN-SCOPE] 内容政策拒绝与文本接口同口径计入风控：违规计数、终端用户封禁、
+					// 会话屏蔽与通知邮件。被拒的图片请求本就不记用量，故 forwardErrored=false，不补用量行。
+					if service.MarkOpenAIImagesPolicyRejection(c, imageUpstreamErr) {
+						cyberBlockBody := body
+						if parsed.Multipart {
+							cyberBlockBody = nil
+						}
+						h.recordCyberPolicyIfMarked(c, apiKey, account, subscription, requestModel, false, cyberBlockBody, clientRequestedUsageFields(c, channelMapping, requestModel, ""), openAIImagesRequestPayloadHash(parsed, body), endUserIdentity)
+					}
 					logEvent := "openai.images.upstream_user_error"
 					if retryableServerError {
 						logEvent = "openai.images.upstream_server_error_after_flush"
@@ -391,10 +408,7 @@ func (h *OpenAIGatewayHandler) Images(c *gin.Context) {
 
 		userAgent := c.GetHeader("User-Agent")
 		clientIP := ip.GetClientIP(c)
-		requestPayloadHash := service.HashUsageRequestPayload(body)
-		if parsed.Multipart {
-			requestPayloadHash = service.HashUsageRequestPayload([]byte(parsed.StickySessionSeed()))
-		}
+		requestPayloadHash := openAIImagesRequestPayloadHash(parsed, body)
 		inboundEndpoint := GetInboundEndpoint(c)
 		upstreamEndpoint := GetUpstreamEndpoint(c, account.Platform)
 		quotaPlatform := service.QuotaPlatform(c.Request.Context(), apiKey)
@@ -445,6 +459,15 @@ func (h *OpenAIGatewayHandler) openAIImagesJSONKeepaliveInterval() time.Duration
 		return 0
 	}
 	return time.Duration(h.cfg.Gateway.ImageNonstreamKeepaliveInterval) * time.Second
+}
+
+// openAIImagesRequestPayloadHash hashes the JSON body, or for multipart uploads
+// the sticky-session seed (the raw multipart bytes carry per-request boundaries).
+func openAIImagesRequestPayloadHash(parsed *service.OpenAIImagesRequest, body []byte) string {
+	if parsed != nil && parsed.Multipart {
+		return service.HashUsageRequestPayload([]byte(parsed.StickySessionSeed()))
+	}
+	return service.HashUsageRequestPayload(body)
 }
 
 func isMultipartImagesContentType(contentType string) bool {
